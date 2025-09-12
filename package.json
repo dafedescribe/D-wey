@@ -1,8 +1,15 @@
 {
+  "name": "whatsapp-email-collector",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
     "@whiskeysockets/baileys": "^7.0.0-rc.2",
     "dotenv": "^17.2.2",
+    "express": "^5.1.0",
     "qrcode-terminal": "^0.12.0"
   }
 }
