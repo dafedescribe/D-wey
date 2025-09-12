@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "@supabase/supabase-js": "^2.57.4",
+    "@whiskeysockets/baileys": "^7.0.0-rc.2",
+    "dotenv": "^17.2.2",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
