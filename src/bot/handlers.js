@@ -1,4 +1,5 @@
 const UserService = require('../services/userService')
+const PaymentService = require('../services/paymentService')
 
 function handleMessage(sock) {
     return async (m) => {
@@ -44,7 +45,7 @@ function handleMessage(sock) {
                 
                 if (result) {
                     const message = result.isNew ? 
-                        `✅ *Email Registered Successfully!*\n\n📧 Email: ${email}\n📱 Phone: ${phoneNumber}\n👤 Name: ${displayName}\n\n_Thank you for registering with us!_` :
+                        `✅ *Email Registered Successfully!*\n\n📧 Email: ${email}\n📱 Phone: ${phoneNumber}\n👤 Name: ${displayName}\n\n_Thank you for registering! You can now make payments using /pay_` :
                         `✅ *Email Updated Successfully!*\n\n📧 New Email: ${email}\n📱 Phone: ${phoneNumber}\n👤 Name: ${displayName}\n\n_Your email has been updated in our records._`
 
                     await sock.sendMessage(jid, { text: message })
@@ -66,13 +67,17 @@ function handleMessage(sock) {
 
 Your registered email: ${existingUser.email}
 
+*Available Commands:*
+💰 /pay - Make a payment
+ℹ️ /myinfo - View your information
+
 To update your email, simply send me your new email address.`
 
                     await sock.sendMessage(jid, { text: response })
                 } else {
                     const response = `👋 *Hello ${displayName}!*
 
-I'm here to collect your email address for our records.
+I'm here to collect your email address and process payments.
 
 *How to register:*
 📧 Simply send me your email address (e.g., john@example.com)
@@ -80,9 +85,49 @@ I'm here to collect your email address for our records.
 *Example:*
 john.doe@gmail.com
 
-I'll store your email along with your phone number and name securely in our database.`
+After registering, you can make payments using /pay`
 
                     await sock.sendMessage(jid, { text: response })
+                }
+            }
+            
+            else if (command === '/pay') {
+                const user = await UserService.getUserByPhone(phoneNumber)
+                
+                if (!user || !user.email) {
+                    await sock.sendMessage(jid, { 
+                        text: '❌ Please register your email first by sending it to me (e.g., john@example.com)' 
+                    })
+                    return
+                }
+
+                try {
+                    // Create payment link (₦10 = 1000 kobo)
+                    const payment = await PaymentService.createPaymentLink(
+                        user.email, 
+                        phoneNumber, 
+                        1000 // Amount in kobo
+                    )
+
+                    const response = `💰 *Payment Link Generated*
+
+Click the link below to make your payment:
+${payment.authorization_url}
+
+💳 Amount: ₦10.00
+📧 Email: ${user.email}
+🔐 Reference: ${payment.reference}
+
+_You'll receive a confirmation message once payment is successful._`
+
+                    await sock.sendMessage(jid, { text: response })
+                    console.log(`💰 Payment link sent to: ${phoneNumber}`)
+
+                } catch (error) {
+                    console.error('❌ Error creating payment:', error.message)
+                    await sock.sendMessage(jid, { 
+                        text: '❌ Sorry, I couldn\'t generate the payment link. Please try again.' 
+                    })
                 }
             }
             
@@ -96,6 +141,10 @@ I'll store your email along with your phone number and name securely in our data
                     return
                 }
                 
+                const paymentStatus = user.payment_status ? 
+                    `💳 *Payment Status:* ${user.payment_status}\n💰 *Amount:* ₦${user.amount_paid ? user.amount_paid/100 : 0}\n📅 *Payment Date:* ${user.payment_date ? new Date(user.payment_date).toLocaleDateString() : 'N/A'}\n` : 
+                    '💳 *Payment Status:* No payments yet\n'
+
                 const response = `👤 *Your Information*
 
 📧 *Email:* ${user.email}
@@ -103,7 +152,11 @@ I'll store your email along with your phone number and name securely in our data
 👤 *Name:* ${user.display_name}
 📅 *Registered:* ${new Date(user.created_at).toLocaleDateString()}
 
-_To update your email, simply send me a new email address._`
+${paymentStatus}
+
+*Commands:*
+💰 /pay - Make a payment
+📧 Send new email to update`
 
                 await sock.sendMessage(jid, { text: response })
             }
@@ -113,10 +166,11 @@ _To update your email, simply send me a new email address._`
                 await sock.sendMessage(jid, { 
                     text: `🤔 I didn't understand that message.
 
-Please send me:
-📧 Your email address to register
-💬 "/start" to see the welcome message
-ℹ️ "/myinfo" to see your registered information
+*Available Commands:*
+📧 Send your email address to register
+💬 /start - Welcome message
+💰 /pay - Make a payment
+ℹ️ /myinfo - View your information
 
 *Example email:* john.doe@gmail.com` 
                 })

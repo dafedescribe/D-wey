@@ -4,6 +4,7 @@ const qrcode = require('qrcode-terminal')
 const pino = require('pino')
 const { handleMessage } = require('./handlers')
 const { testConnection } = require('../config/database')
+const { setWhatsAppSocket } = require('../webhook/paymentWebhook')
 
 async function connectToWhatsApp() {
     // Test database connection first
@@ -23,6 +24,9 @@ async function connectToWhatsApp() {
         generateHighQualityLinkPreview: false
     })
     
+    // Set socket for webhook notifications
+    setWhatsAppSocket(sock)
+    
     // QR Code handling
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update
@@ -38,7 +42,7 @@ async function connectToWhatsApp() {
             if (shouldReconnect) connectToWhatsApp()
         } else if (connection === 'open') {
             console.log('✅ Bot connected successfully!')
-            console.log('📧 Ready to collect emails from users')
+            console.log('📧 Ready to collect emails and process payments')
         }
     })
     
