@@ -105,7 +105,8 @@ class PaymentService {
                 description: `Card payment - ₦${nairaAmount/100}`,
                 status: 'pending',
                 reference: reference,
-                created_at: new Date().toISOString()
+                created_at: new Date().toISOString(),
+                expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString() // 1 hour expiry
             }
 
             // Add transaction but don't update balance yet (pending)
@@ -227,6 +228,184 @@ class PaymentService {
         }
     }
 
+    // Get any transaction by reference (for cancellations, failures, etc.)
+    static async getTransactionByReference(reference) {
+        try {
+            const { data: users, error } = await supabase
+                .from('users')
+                .select('*')
+                .not('transactions', 'is', null)
+
+            if (error) throw error
+
+            for (const user of users) {
+                if (user.transactions) {
+                    const transaction = user.transactions.find(t => t.reference === reference)
+                    if (transaction) {
+                        return { user, transaction }
+                    }
+                }
+            }
+
+            return null
+        } catch (error) {
+            console.error('❌ Error getting transaction by reference:', error.message)
+            return null
+        }
+    }
+
+    // Update transaction status (for failures, cancellations, etc.)
+    static async updateTransactionStatus(phoneNumber, reference, status, additionalData = {}) {
+        try {
+            const user = await UserService.getUserByPhone(phoneNumber)
+            if (!user || !user.transactions) return false
+
+            const updatedTransactions = user.transactions.map(t => 
+                t.reference === reference ? { 
+                    ...t, 
+                    status: status,
+                    ...additionalData,
+                    updated_at: new Date().toISOString()
+                } : t
+            )
+
+            await supabase
+                .from('users')
+                .update({
+                    transactions: updatedTransactions,
+                    updated_at: new Date().toISOString()
+                })
+                .eq('phone_number', phoneNumber)
+
+            console.log(`📝 Transaction status updated: ${reference} -> ${status}`)
+            return true
+        } catch (error) {
+            console.error('❌ Error updating transaction status:', error.message)
+            return false
+        }
+    }
+
+    // Cancel pending transaction
+    static async cancelTransaction(reference, reason = 'Payment cancelled') {
+        try {
+            const transactionData = await this.getTransactionByReference(reference)
+            if (!transactionData) return null
+
+            const { user, transaction } = transactionData
+            
+            if (transaction.status !== 'pending') {
+                console.log(`⚠️ Cannot cancel non-pending transaction: ${reference} (Status: ${transaction.status})`)
+                return null
+            }
+
+            const success = await this.updateTransactionStatus(user.phone_number, reference, 'cancelled', {
+                cancelled_reason: reason,
+                cancelled_at: new Date().toISOString()
+            })
+
+            if (success) {
+                console.log(`🚫 Transaction cancelled: ${reference}`)
+                return { user, transaction }
+            }
+            
+            return null
+        } catch (error) {
+            console.error('❌ Error cancelling transaction:', error.message)
+            return null
+        }
+    }
+
+    // Mark transaction as failed
+    static async failTransaction(reference, reason = 'Payment failed') {
+        try {
+            const transactionData = await this.getTransactionByReference(reference)
+            if (!transactionData) return null
+
+            const { user, transaction } = transactionData
+            
+            const success = await this.updateTransactionStatus(user.phone_number, reference, 'failed', {
+                failure_reason: reason,
+                failed_at: new Date().toISOString()
+            })
+
+            if (success) {
+                console.log(`❌ Transaction failed: ${reference}`)
+                return { user, transaction }
+            }
+            
+            return null
+        } catch (error) {
+            console.error('❌ Error failing transaction:', error.message)
+            return null
+        }
+    }
+
+    // Get expired pending transactions
+    static async getExpiredTransactions() {
+        try {
+            const { data: users, error } = await supabase
+                .from('users')
+                .select('*')
+                .not('transactions', 'is', null)
+
+            if (error) throw error
+
+            const expiredTransactions = []
+            const now = new Date()
+
+            for (const user of users) {
+                if (user.transactions) {
+                    user.transactions.forEach(transaction => {
+                        if (transaction.status === 'pending' && 
+                            transaction.expires_at && 
+                            new Date(transaction.expires_at) < now) {
+                            expiredTransactions.push({ user, transaction })
+                        }
+                    })
+                }
+            }
+
+            return expiredTransactions
+        } catch (error) {
+            console.error('❌ Error getting expired transactions:', error.message)
+            return []
+        }
+    }
+
+    // Clean up expired transactions
+    static async cleanupExpiredTransactions() {
+        try {
+            const expiredTransactions = await this.getExpiredTransactions()
+            let cleanedCount = 0
+
+            for (const { user, transaction } of expiredTransactions) {
+                const success = await this.updateTransactionStatus(
+                    user.phone_number, 
+                    transaction.reference, 
+                    'expired', 
+                    {
+                        expired_reason: 'Payment session timeout',
+                        expired_at: new Date().toISOString()
+                    }
+                )
+
+                if (success) {
+                    cleanedCount++
+                    console.log(`⏰ Transaction expired: ${transaction.reference}`)
+                }
+            }
+
+            if (cleanedCount > 0) {
+                console.log(`🧹 Cleaned up ${cleanedCount} expired transactions`)
+            }
+
+            return cleanedCount
+        } catch (error) {
+            console.error('❌ Error cleaning up expired transactions:', error.message)
+            return 0
+        }
+    }
+
     // Parse amount from user input
     static parseAmount(input) {
         // Remove any non-numeric characters except decimal point
@@ -291,6 +470,91 @@ class PaymentService {
         })
     }
 
+    // Get user transaction history with filters
+    static async getUserTransactions(phoneNumber, status = null, limit = 10) {
+        try {
+            const user = await UserService.getUserByPhone(phoneNumber)
+            if (!user || !user.transactions) return []
+
+            let transactions = user.transactions
+
+            // Filter by status if provided
+            if (status) {
+                transactions = transactions.filter(t => t.status === status)
+            }
+
+            // Sort by creation date (newest first) and limit
+            return transactions
+                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+                .slice(0, limit)
+
+        } catch (error) {
+            console.error('❌ Error getting user transactions:', error.message)
+            return []
+        }
+    }
+
+    // Get transaction statistics
+    static async getTransactionStats(phoneNumber = null) {
+        try {
+            let users = []
+            
+            if (phoneNumber) {
+                const user = await UserService.getUserByPhone(phoneNumber)
+                if (user) users = [user]
+            } else {
+                const { data, error } = await supabase
+                    .from('users')
+                    .select('*')
+                    .not('transactions', 'is', null)
+                
+                if (error) throw error
+                users = data
+            }
+
+            const stats = {
+                total: 0,
+                completed: 0,
+                pending: 0,
+                failed: 0,
+                cancelled: 0,
+                expired: 0,
+                reversed: 0,
+                totalAmount: 0,
+                totalTums: 0,
+                averageAmount: 0
+            }
+
+            let completedTransactions = []
+
+            users.forEach(user => {
+                if (user.transactions) {
+                    user.transactions.forEach(transaction => {
+                        if (transaction.payment_method === 'card') {
+                            stats.total++
+                            stats[transaction.status] = (stats[transaction.status] || 0) + 1
+                            
+                            if (transaction.status === 'completed') {
+                                stats.totalAmount += transaction.naira_amount
+                                stats.totalTums += transaction.tums_amount
+                                completedTransactions.push(transaction)
+                            }
+                        }
+                    })
+                }
+            })
+
+            if (completedTransactions.length > 0) {
+                stats.averageAmount = stats.totalAmount / completedTransactions.length
+            }
+
+            return stats
+        } catch (error) {
+            console.error('❌ Error getting transaction stats:', error.message)
+            return null
+        }
+    }
+
     // Get supported payment methods (only card)
     static getSupportedPaymentMethods() {
         return {
@@ -320,6 +584,35 @@ class PaymentService {
             isValid: errors.length === 0,
             errors
         }
+    }
+
+    // Format amount for display
+    static formatAmount(amount, currency = '₦') {
+        return `${currency}${amount.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    }
+
+    // Format tums for display
+    static formatTums(tums) {
+        return `${tums.toLocaleString('en-NG')} tums`
+    }
+
+    // Get payment status emoji
+    static getStatusEmoji(status) {
+        const emojis = {
+            pending: '⏳',
+            completed: '✅',
+            failed: '❌',
+            cancelled: '🚫',
+            expired: '⏰',
+            reversed: '🔄',
+            disputed: '⚠️'
+        }
+        return emojis[status] || '❓'
+    }
+
+    // Check if reference is valid format
+    static isValidReference(reference) {
+        return /^pay_\d+_\d+$/.test(reference)
     }
 }
 
