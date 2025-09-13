@@ -3,8 +3,8 @@ const { supabase } = require('../config/database')
 const UserService = require('./userService')
 
 class PaymentService {
-    static MINIMUM_AMOUNT = 500 // Minimum ₦5.00
-    static CONVERSION_RATE = 4 // 4x coins for every naira paid
+    static MINIMUM_AMOUNT = 50000 // Minimum ₦500.00 in kobo
+    static CONVERSION_RATE = 4 // 4x tums for every naira paid
 
     // Create payment link with custom amount
     static async createPaymentLink(email, phoneNumber, amount) {
@@ -67,12 +67,12 @@ class PaymentService {
     // Store pending transaction in user's transaction history
     static async storePendingTransaction(phoneNumber, reference, nairaAmount) {
         try {
-            const coinsAmount = nairaAmount * this.CONVERSION_RATE / 100 // Convert kobo to naira, then apply 4x rate
+            const tumsAmount = nairaAmount * this.CONVERSION_RATE / 100 // Convert kobo to naira, then apply 4x rate
             
             const transaction = {
                 id: `txn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
                 type: 'credit',
-                coins_amount: coinsAmount,
+                tums_amount: tumsAmount,
                 naira_amount: nairaAmount / 100, // Convert kobo to naira for display
                 description: `Wallet top-up - ₦${nairaAmount/100}`,
                 status: 'pending',
@@ -95,7 +95,7 @@ class PaymentService {
                     .eq('phone_number', phoneNumber)
             }
 
-            console.log(`💰 Pending transaction stored: ${reference} - ₦${nairaAmount/100} -> ${coinsAmount} coins`)
+            console.log(`💰 Pending transaction stored: ${reference} - ₦${nairaAmount/100} -> ${tumsAmount} tums`)
         } catch (error) {
             console.error('❌ Error storing pending transaction:', error.message)
         }
@@ -139,7 +139,7 @@ class PaymentService {
             )
 
             // Update wallet balance
-            const newBalance = (targetUser.wallet_balance || 0) + pendingTransaction.coins_amount
+            const newBalance = (targetUser.wallet_balance || 0) + pendingTransaction.tums_amount
 
             const { data, error: updateError } = await supabase
                 .from('users')
@@ -154,7 +154,7 @@ class PaymentService {
 
             if (updateError) throw updateError
 
-            console.log(`✅ Payment completed: ${reference} - ${pendingTransaction.coins_amount} coins added`)
+            console.log(`✅ Payment completed: ${reference} - ${pendingTransaction.tums_amount} tums added`)
             return {
                 user: data,
                 transaction: pendingTransaction,
@@ -215,7 +215,7 @@ class PaymentService {
         return amountInKobo
     }
 
-    // Calculate coins that will be received
+    // Calculate tums that will be received
     static calculateCoins(nairaAmount) {
         return nairaAmount * this.CONVERSION_RATE / 100 // Convert kobo to naira, then apply 4x
     }

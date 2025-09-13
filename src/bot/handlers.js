@@ -45,7 +45,7 @@ function handleMessage(sock) {
                 
                 if (result) {
                     const message = result.isNew ? 
-                        `✅ *Email Registered Successfully!*\n\n📧 Email: ${email}\n📱 Phone: ${phoneNumber}\n👤 Name: ${displayName}\n💰 Wallet Balance: 0 coins\n\n*Available Commands:*\n💰 /pay [amount] - Add money to wallet\n🏦 /balance - Check wallet balance\n📊 /history - Transaction history\n\n_Send /pay 10 to add ₦10 to your wallet_` :
+                        `✅ *Email Registered Successfully!*\n\n📧 Email: ${email}\n📱 Phone: ${phoneNumber}\n👤 Name: ${displayName}\n💰 Wallet Balance: 0 tums\n\n*Available Commands:*\n💰 /pay [amount] - Add money to wallet\n🏦 /balance - Check wallet balance\n\n_Send /pay 500 to add ₦500 to your wallet_` :
                         `✅ *Email Updated Successfully!*\n\n📧 New Email: ${email}\n📱 Phone: ${phoneNumber}\n👤 Name: ${displayName}\n\n_Your email has been updated in our records._`
 
                     await sock.sendMessage(jid, { text: message })
@@ -67,25 +67,24 @@ function handleMessage(sock) {
                     const response = `👋 *Welcome back ${displayName}!*
 
 📧 Email: ${existingUser.email}
-💰 Wallet Balance: *${balance} coins*
+💰 Wallet Balance: *${balance} tums*
 
 *Available Commands:*
 💰 /pay [amount] - Add money to wallet
 🏦 /balance - Check wallet balance
-📊 /history - Transaction history
 ℹ️ /myinfo - View your information
 
 *Examples:*
-/pay 10 (adds ₦10 → 40 coins)
-/pay 25.50 (adds ₦25.50 → 102 coins)
+/pay 500 (adds ₦500 → 2000 tums)
+/pay 1000 (adds ₦1000 → 4000 tums)
 
-_Conversion Rate: ₦1 = 4 coins | Minimum: ₦5_`
+_Conversion Rate: ₦1 = 4 tums | Minimum: ₦500_`
 
                     await sock.sendMessage(jid, { text: response })
                 } else {
                     const response = `👋 *Hello ${displayName}!*
 
-I'm your wallet bot for collecting emails and managing your coin balance.
+I'm your wallet bot for collecting emails and managing your tums balance.
 
 *How to get started:*
 📧 Send me your email address (e.g., john@example.com)
@@ -93,10 +92,9 @@ I'm your wallet bot for collecting emails and managing your coin balance.
 *After registering, you can:*
 💰 Add money to your wallet
 🏦 Check your balance
-📊 View transaction history
 
-*Conversion Rate:* ₦1 = 4 coins
-*Minimum deposit:* ₦5`
+*Conversion Rate:* ₦1 = 4 tums
+*Minimum deposit:* ₦500`
 
                     await sock.sendMessage(jid, { text: response })
                 }
@@ -122,19 +120,19 @@ I'm your wallet bot for collecting emails and managing your coin balance.
 *Format:* /pay [amount]
 
 *Examples:*
-/pay 10 (₦10 → 40 coins)
-/pay 25.50 (₦25.50 → 102 coins)
-/pay 100 (₦100 → 400 coins)
+/pay 500 (₦500 → 2000 tums)
+/pay 1000 (₦1000 → 4000 tums)
+/pay 2500 (₦2500 → 10000 tums)
 
-*Minimum:* ₦5.00
-*Rate:* ₦1 = 4 coins` 
+*Minimum:* ₦500.00
+*Rate:* ₦1 = 4 tums` 
                         })
                         return
                     }
 
                     const amountInKobo = PaymentService.parseAmount(parts[1])
                     const amountInNaira = amountInKobo / 100
-                    const coinsToReceive = PaymentService.calculateCoins(amountInKobo)
+                    const tumsToReceive = PaymentService.calculateCoins(amountInKobo)
 
                     // Create payment link
                     const payment = await PaymentService.createPaymentLink(
@@ -149,20 +147,20 @@ Click the link below to add money to your wallet:
 ${payment.authorization_url}
 
 💳 Amount: ₦${amountInNaira}
-🪙 You'll receive: *${coinsToReceive} coins*
+🪙 You'll receive: *${tumsToReceive} tums*
 📧 Email: ${user.email}
 🔐 Reference: ${payment.reference}
 
-_Conversion: ₦1 = 4 coins_
+_Conversion: ₦1 = 4 tums_
 _You'll get a confirmation once payment is successful_`
 
                     await sock.sendMessage(jid, { text: response })
-                    console.log(`💰 Payment link sent: ₦${amountInNaira} → ${coinsToReceive} coins`)
+                    console.log(`💰 Payment link sent: ₦${amountInNaira} → ${tumsToReceive} tums`)
 
                 } catch (error) {
                     console.error('❌ Error creating payment:', error.message)
                     await sock.sendMessage(jid, { 
-                        text: `❌ ${error.message}\n\n💡 Use: /pay [amount]\nExample: /pay 10` 
+                        text: `❌ ${error.message}\n\n💡 Use: /pay [amount]\nExample: /pay 500` 
                     })
                 }
             }
@@ -178,69 +176,12 @@ _You'll get a confirmation once payment is successful_`
                 }
                 
                 const balance = user.wallet_balance || 0
-                const pendingTransactions = (user.transactions || []).filter(t => t.status === 'pending')
-                const pendingAmount = pendingTransactions.reduce((sum, t) => sum + t.coins_amount, 0)
 
-                let response = `🏦 *Wallet Balance*
+                const response = `🏦 *Wallet Balance*
 
-💰 *Available Balance:* ${balance} coins`
+💰 *Available Balance:* ${balance} tums
 
-                if (pendingAmount > 0) {
-                    response += `\n⏳ *Pending:* ${pendingAmount} coins`
-                }
-
-                response += `\n\n*Recent Activity:*`
-                
-                const recentTransactions = (user.transactions || []).slice(0, 3)
-                if (recentTransactions.length > 0) {
-                    recentTransactions.forEach(t => {
-                        const icon = t.type === 'credit' ? '💰' : '💸'
-                        const status = t.status === 'pending' ? '⏳' : '✅'
-                        response += `\n${status} ${icon} ${t.coins_amount} coins - ${t.description}`
-                    })
-                } else {
-                    response += `\n_No transactions yet_`
-                }
-
-                response += `\n\n💰 Use /pay [amount] to add money\n📊 Use /history for full transaction history`
-
-                await sock.sendMessage(jid, { text: response })
-            }
-            
-            else if (command === '/history') {
-                const user = await UserService.getUserByPhone(phoneNumber)
-                
-                if (!user || !user.email) {
-                    await sock.sendMessage(jid, { 
-                        text: '📝 Please register your email first!' 
-                    })
-                    return
-                }
-                
-                const transactions = await UserService.getTransactionHistory(phoneNumber, 10)
-                
-                if (transactions.length === 0) {
-                    await sock.sendMessage(jid, { 
-                        text: '📊 *Transaction History*\n\n_No transactions yet_\n\n💰 Use /pay [amount] to get started!' 
-                    })
-                    return
-                }
-
-                let response = `📊 *Transaction History*\n\n`
-                
-                transactions.forEach((t, index) => {
-                    const icon = t.type === 'credit' ? '💰' : '💸'
-                    const status = t.status === 'pending' ? '⏳ Pending' : '✅ Completed'
-                    const date = new Date(t.created_at).toLocaleDateString('en-GB', {
-                        day: '2-digit', month: '2-digit', year: '2-digit'
-                    })
-                    
-                    response += `${icon} *${t.coins_amount} coins* ${status}\n`
-                    response += `   ${t.description}\n`
-                    response += `   ${date}\n\n`
-                })
-
-                response += `_Showing last ${transactions.length} transactions_`
+💰 Use /pay [amount] to add money`
 
                 await sock.sendMessage(jid, { text: response })
             }
@@ -256,10 +197,6 @@ _You'll get a confirmation once payment is successful_`
                 }
                 
                 const balance = user.wallet_balance || 0
-                const transactions = user.transactions || []
-                const totalDeposited = transactions
-                    .filter(t => t.type === 'credit' && t.status === 'completed')
-                    .reduce((sum, t) => sum + t.naira_amount, 0)
 
                 const response = `👤 *Your Information*
 
@@ -268,16 +205,13 @@ _You'll get a confirmation once payment is successful_`
 👤 *Name:* ${user.display_name}
 📅 *Registered:* ${new Date(user.created_at).toLocaleDateString()}
 
-💰 *Wallet Balance:* ${balance} coins
-💳 *Total Deposited:* ₦${totalDeposited}
-📊 *Total Transactions:* ${transactions.length}
+💰 *Wallet Balance:* ${balance} tums
 
 *Available Commands:*
 💰 /pay [amount] - Add money
 🏦 /balance - Check balance
-📊 /history - View transactions
 
-*Rate:* ₦1 = 4 coins | *Min:* ₦5`
+*Rate:* ₦1 = 4 tums | *Min:* ₦500`
 
                 await sock.sendMessage(jid, { text: response })
             }
@@ -292,12 +226,11 @@ _You'll get a confirmation once payment is successful_`
 💬 /start - Welcome message
 💰 /pay [amount] - Add money to wallet
 🏦 /balance - Check wallet balance
-📊 /history - Transaction history
 ℹ️ /myinfo - Account information
 
 *Examples:*
 john.doe@gmail.com
-/pay 20` 
+/pay 500` 
                 })
             }
             

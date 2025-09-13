@@ -107,9 +107,9 @@ class UserService {
             // Calculate new balance
             let newBalance = user.wallet_balance || 0
             if (transaction.type === 'credit') {
-                newBalance += transaction.coins_amount
+                newBalance += transaction.tums_amount
             } else if (transaction.type === 'debit') {
-                newBalance -= transaction.coins_amount
+                newBalance -= transaction.tums_amount
             }
 
             // Update user record
@@ -126,25 +126,11 @@ class UserService {
 
             if (error) throw error
             
-            console.log(`💰 Transaction added for ${phoneNumber}: ${transaction.type} ${transaction.coins_amount} coins`)
+            console.log(`💰 Transaction added for ${phoneNumber}: ${transaction.type} ${transaction.tums_amount} tums`)
             return { user: data, newBalance }
         } catch (error) {
             console.error('❌ Error adding transaction:', error.message)
             throw error
-        }
-    }
-
-    // Get user's transaction history (with optional limit)
-    static async getTransactionHistory(phoneNumber, limit = 10) {
-        try {
-            const user = await this.getUserByPhone(phoneNumber)
-            if (!user) return []
-
-            const transactions = user.transactions || []
-            return transactions.slice(0, limit)
-        } catch (error) {
-            console.error('❌ Error getting transaction history:', error.message)
-            return []
         }
     }
 
@@ -157,7 +143,7 @@ class UserService {
             const transaction = {
                 id: `txn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
                 type: newBalance > (user.wallet_balance || 0) ? 'credit' : 'debit',
-                coins_amount: Math.abs(newBalance - (user.wallet_balance || 0)),
+                tums_amount: Math.abs(newBalance - (user.wallet_balance || 0)),
                 naira_amount: 0,
                 description: reason,
                 status: 'completed',
@@ -173,20 +159,20 @@ class UserService {
     }
 
     // Deduct from wallet (for purchases/spending)
-    static async deductFromWallet(phoneNumber, coinsAmount, description = 'Purchase') {
+    static async deductFromWallet(phoneNumber, tumsAmount, description = 'Purchase') {
         try {
             const user = await this.getUserByPhone(phoneNumber)
             if (!user) throw new Error('User not found')
 
             const currentBalance = user.wallet_balance || 0
-            if (currentBalance < coinsAmount) {
+            if (currentBalance < tumsAmount) {
                 throw new Error('Insufficient balance')
             }
 
             const transaction = {
                 id: `txn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
                 type: 'debit',
-                coins_amount: coinsAmount,
+                tums_amount: tumsAmount,
                 naira_amount: 0,
                 description: description,
                 status: 'completed',

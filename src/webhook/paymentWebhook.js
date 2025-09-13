@@ -1,5 +1,6 @@
 const crypto = require('crypto')
 const PaymentService = require('../services/paymentService')
+const { supabase } = require('../config/database')
 
 // Store WhatsApp socket instance
 let whatsappSocket = null
@@ -40,22 +41,21 @@ async function handlePaystackWebhook(req, res) {
 
 ✅ *Wallet Credited Successfully*
 💰 Amount Paid: ₦${transaction.naira_amount}
-🪙 Coins Added: *${transaction.coins_amount} coins*
-🏦 New Balance: *${newBalance} coins*
+🪙 Tums Added: *${transaction.tums_amount} tums*
+🏦 New Balance: *${newBalance} tums*
 
 🔐 Reference: ${reference}
 👤 Name: ${user.display_name}
 📅 ${new Date().toLocaleString()}
 
-_Thank you for your payment! Your coins are now available._
+_Thank you for your payment! Your tums are now available._
 
 *Available Commands:*
 🏦 /balance - Check balance
-📊 /history - View transactions
 💰 /pay [amount] - Add more money`
 
                 await whatsappSocket.sendMessage(phoneJid, { text: message })
-                console.log(`✅ Wallet credited: ${user.phone_number} - ${transaction.coins_amount} coins`)
+                console.log(`✅ Wallet credited: ${user.phone_number} - ${transaction.tums_amount} tums`)
             } else {
                 console.log(`⚠️ Payment completed but no user found or WhatsApp not connected: ${reference}`)
             }
@@ -114,6 +114,7 @@ _No money was deducted from your account._`
         res.status(200).send('OK')
     } catch (error) {
         console.error('❌ Webhook error:', error.message)
+        res.status(500).send('Webhook error')
         res.status(500).send('Webhook error')
     }
 }
