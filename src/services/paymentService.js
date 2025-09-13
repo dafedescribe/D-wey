@@ -9,7 +9,7 @@ class PaymentService {
             email: email,
             amount: amount * 100, // Paystack uses kobo
             reference: reference,
-            callback_url: `${process.env.RENDER_EXTERNAL_URL || 'http://localhost:3000'}/webhook/paystack`
+            callback_url: `https://wa.me/${process.env.BOT_PHONE_NUMBER}?text=I%20just%20completed%20payment`
         })
 
         const options = {
