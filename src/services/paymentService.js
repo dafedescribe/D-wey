@@ -6,7 +6,7 @@ class PaymentService {
     static MINIMUM_AMOUNT = 50000 // Minimum ₦500.00 in kobo
     static CONVERSION_RATE = 4 // 4x tums for every naira paid
 
-    // Create payment link with custom amount
+    // Create payment link with card payment only
     static async createPaymentLink(email, phoneNumber, amount) {
         // Validate minimum amount
         if (amount < this.MINIMUM_AMOUNT) {
@@ -19,7 +19,25 @@ class PaymentService {
             email: email,
             amount: amount, // Amount already in kobo
             reference: reference,
-            callback_url: `https://api.whatsapp.com/send?phone=${process.env.BOT_PHONE_NUMBER}`
+            channels: ['card'], // Only allow card payments
+            currency: 'NGN',
+            metadata: {
+                phone_number: phoneNumber,
+                payment_method: 'card_only',
+                custom_fields: [
+                    {
+                        display_name: "Phone Number",
+                        variable_name: "phone_number",
+                        value: phoneNumber
+                    },
+                    {
+                        display_name: "Payment Method",
+                        variable_name: "payment_method", 
+                        value: "Card Payment"
+                    }
+                ]
+            },
+            callback_url: `https://api.whatsapp.com/send?phone=${process.env.BOT_PHONE_NUMBER}&text=Payment completed for reference: ${reference}`
         })
 
         const options = {
@@ -47,18 +65,27 @@ class PaymentService {
                             resolve({
                                 authorization_url: result.data.authorization_url,
                                 reference: reference,
-                                amount: amount
+                                amount: amount,
+                                access_code: result.data.access_code
                             })
                         } else {
-                            reject(new Error(result.message))
+                            reject(new Error(result.message || 'Failed to create payment link'))
                         }
                     } catch (error) {
-                        reject(error)
+                        reject(new Error('Invalid response from payment gateway'))
                     }
                 })
             })
             
-            req.on('error', reject)
+            req.on('error', (error) => {
+                reject(new Error(`Payment gateway connection failed: ${error.message}`))
+            })
+            
+            req.setTimeout(30000, () => {
+                req.destroy()
+                reject(new Error('Payment gateway request timeout'))
+            })
+            
             req.write(postData)
             req.end()
         })
@@ -72,9 +99,10 @@ class PaymentService {
             const transaction = {
                 id: `txn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
                 type: 'credit',
+                payment_method: 'card',
                 tums_amount: tumsAmount,
                 naira_amount: nairaAmount / 100, // Convert kobo to naira for display
-                description: `Wallet top-up - ₦${nairaAmount/100}`,
+                description: `Card payment - ₦${nairaAmount/100}`,
                 status: 'pending',
                 reference: reference,
                 created_at: new Date().toISOString()
@@ -95,13 +123,13 @@ class PaymentService {
                     .eq('phone_number', phoneNumber)
             }
 
-            console.log(`💰 Pending transaction stored: ${reference} - ₦${nairaAmount/100} -> ${tumsAmount} tums`)
+            console.log(`💳 Pending card payment stored: ${reference} - ₦${nairaAmount/100} -> ${tumsAmount} tums`)
         } catch (error) {
             console.error('❌ Error storing pending transaction:', error.message)
         }
     }
 
-    // Complete payment and credit wallet
+    // Complete card payment and credit wallet
     static async completePayment(reference) {
         try {
             // Find user with this payment reference
@@ -130,12 +158,16 @@ class PaymentService {
             }
 
             if (!targetUser || !pendingTransaction) {
-                throw new Error('Pending transaction not found')
+                throw new Error('Pending card transaction not found')
             }
 
             // Update transaction status to completed
             const updatedTransactions = targetUser.transactions.map(t => 
-                t.reference === reference ? { ...t, status: 'completed' } : t
+                t.reference === reference ? { 
+                    ...t, 
+                    status: 'completed',
+                    completed_at: new Date().toISOString()
+                } : t
             )
 
             // Update wallet balance
@@ -154,7 +186,7 @@ class PaymentService {
 
             if (updateError) throw updateError
 
-            console.log(`✅ Payment completed: ${reference} - ${pendingTransaction.tums_amount} tums added`)
+            console.log(`✅ Card payment completed: ${reference} - ${pendingTransaction.tums_amount} tums added`)
             return {
                 user: data,
                 transaction: pendingTransaction,
@@ -162,7 +194,7 @@ class PaymentService {
             }
 
         } catch (error) {
-            console.error('❌ Error completing payment:', error.message)
+            console.error('❌ Error completing card payment:', error.message)
             return null
         }
     }
@@ -202,14 +234,14 @@ class PaymentService {
         const amount = parseFloat(cleanInput)
         
         if (isNaN(amount) || amount <= 0) {
-            throw new Error('Invalid amount format')
+            throw new Error('Please enter a valid amount (numbers only)')
         }
 
         // Convert to kobo
         const amountInKobo = Math.round(amount * 100)
 
         if (amountInKobo < this.MINIMUM_AMOUNT) {
-            throw new Error(`Minimum amount is ₦${this.MINIMUM_AMOUNT/100}`)
+            throw new Error(`Minimum card payment amount is ₦${this.MINIMUM_AMOUNT/100}`)
         }
 
         return amountInKobo
@@ -220,6 +252,7 @@ class PaymentService {
         return nairaAmount * this.CONVERSION_RATE / 100 // Convert kobo to naira, then apply 4x
     }
 
+    // Verify card payment with Paystack
     static async verifyPayment(reference) {
         const options = {
             hostname: 'api.paystack.co',
@@ -240,14 +273,53 @@ class PaymentService {
                         const result = JSON.parse(data)
                         resolve(result)
                     } catch (error) {
-                        reject(error)
+                        reject(new Error('Invalid payment verification response'))
                     }
                 })
             })
             
-            req.on('error', reject)
+            req.on('error', (error) => {
+                reject(new Error(`Payment verification failed: ${error.message}`))
+            })
+            
+            req.setTimeout(15000, () => {
+                req.destroy()
+                reject(new Error('Payment verification timeout'))
+            })
+            
             req.end()
         })
+    }
+
+    // Get supported payment methods (only card)
+    static getSupportedPaymentMethods() {
+        return {
+            card: {
+                name: 'Credit/Debit Card',
+                description: 'Visa, Mastercard, Verve cards',
+                min_amount: this.MINIMUM_AMOUNT / 100,
+                conversion_rate: this.CONVERSION_RATE,
+                fees: 'Standard card processing fees apply'
+            }
+        }
+    }
+
+    // Validate card payment requirements
+    static validateCardPayment(amount) {
+        const errors = []
+        
+        if (amount < this.MINIMUM_AMOUNT) {
+            errors.push(`Minimum card payment is ₦${this.MINIMUM_AMOUNT/100}`)
+        }
+        
+        if (amount > 500000000) { // 5 million naira limit
+            errors.push('Maximum card payment is ₦5,000,000')
+        }
+        
+        return {
+            isValid: errors.length === 0,
+            errors
+        }
     }
 }
 
