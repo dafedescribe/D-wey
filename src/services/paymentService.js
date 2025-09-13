@@ -9,7 +9,7 @@ class PaymentService {
             email: email,
             amount: amount * 100, // Paystack uses kobo
             reference: reference,
-            callback_url: `https://wa.me/${process.env.BOT_PHONE_NUMBER}?text=I%20just%20completed%20payment`
+            callback_url: `https://api.whatsapp.com/send?phone=${process.env.BOT_PHONE_NUMBER}`
         })
 
         const options = {
