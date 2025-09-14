@@ -1,5 +1,6 @@
 const UserService = require('../services/userService')
 const PaymentService = require('../services/paymentService')
+const CouponService = require('../services/couponService')
 
 function handleMessage(sock) {
     return async (m) => {
@@ -26,31 +27,48 @@ function handleMessage(sock) {
         try {
             const command = text.toLowerCase().trim()
 
+            // Rate limiting check for all interactions
+            const rateLimitCheck = UserService.checkRateLimit(phoneNumber, 'general')
+            if (!rateLimitCheck.allowed) {
+                await sock.sendMessage(jid, { text: rateLimitCheck.message })
+                return
+            }
+
             // Check if message contains an email
             if (UserService.isValidEmail(text.trim())) {
-                const email = text.trim().toLowerCase()
-                console.log(`📧 Email detected: ${email}`)
-                
-                // Check if email is already taken
-                const isEmailTaken = await UserService.isEmailTaken(email)
-                if (isEmailTaken) {
-                    await sock.sendMessage(jid, { 
-                        text: '❌ This email is already registered with another number. Please use a different email address.' 
-                    })
+                // Additional rate limiting for email operations
+                const emailRateCheck = UserService.checkRateLimit(phoneNumber, 'email')
+                if (!emailRateCheck.allowed) {
+                    await sock.sendMessage(jid, { text: `⚠️ Too many email attempts. ${emailRateCheck.message}` })
                     return
                 }
 
-                // Store the email
-                const result = await UserService.storeUserEmail(phoneNumber, displayName, email)
+                const email = text.trim().toLowerCase()
+                console.log(`📧 Email detected: ${email}`)
                 
-                if (result) {
-                    const message = result.isNew ? 
-                        `✅ *Email Registered Successfully!*
+                try {
+                    // Check if email is already taken by another user
+                    const isEmailTaken = await UserService.isEmailTaken(email)
+                    if (isEmailTaken) {
+                        await sock.sendMessage(jid, { 
+                            text: '❌ This email is already registered with another number. Please use a different email address.' 
+                        })
+                        return
+                    }
+
+                    // Store the email
+                    const result = await UserService.storeUserEmail(phoneNumber, displayName, email)
+                    
+                    if (result.isNew) {
+                        // New user with signup bonus
+                        const message = `🎉 *Welcome! Email Registered Successfully!*
 
 📧 Email: ${email}
 📱 Phone: ${phoneNumber}
 👤 Name: ${displayName}
-💰 Wallet Balance: 0 tums
+💰 Wallet Balance: *${result.signupBonus} tums* (Welcome Bonus!)
+
+🎁 *You received ${result.signupBonus} free tums as a welcome gift!*
 
 *💳 Payment Method: Card Only*
 We only accept Credit/Debit Card payments (Visa, Mastercard, Verve)
@@ -58,32 +76,42 @@ We only accept Credit/Debit Card payments (Visa, Mastercard, Verve)
 *Available Commands:*
 💰 /pay [amount] - Add money via card
 🏦 /balance - Check wallet balance
+🎫 /coupon [code] - Redeem coupon codes
 
 *Examples:*
 /pay 500 (₦500 → 2000 tums)
 /pay 1000 (₦1000 → 4000 tums)
+/coupon WELCOME50
 
 *Card Payment Details:*
 • Minimum: ₦500.00
 • Rate: ₦1 = 4 tums
 • Secure payment via Paystack
-• Instant credit after successful payment` :
-                        `✅ *Email Updated Successfully!*
+• Instant credit after successful payment
 
-📧 New Email: ${email}
-📱 Phone: ${phoneNumber}
-👤 Name: ${displayName}
+_🎊 Enjoy your welcome bonus and start exploring!_`
 
-_Your email has been updated in our records._
-
-💳 *Payment Method: Card Only*
-Use /pay [amount] to add money via card payment`
-
-                    await sock.sendMessage(jid, { text: message })
-                } else {
-                    await sock.sendMessage(jid, { 
-                        text: '❌ Sorry, I couldn\'t save your email. Please try again.' 
-                    })
+                        await sock.sendMessage(jid, { text: message })
+                    } else {
+                        // Existing user trying to change email
+                        if (result.user.email) {
+                            await sock.sendMessage(jid, { 
+                                text: `❌ Email cannot be changed. Your registered email is: ${result.user.email}\n\n💡 Use /balance to check your current wallet balance.` 
+                            })
+                        } else {
+                            await sock.sendMessage(jid, { 
+                                text: `✅ Welcome back! Your email: ${email}\n\n💰 Wallet Balance: ${result.user.wallet_balance || 0} tums\n\n💡 Use /balance for more details.` 
+                            })
+                        }
+                    }
+                } catch (error) {
+                    if (error.message.includes('cannot be changed')) {
+                        await sock.sendMessage(jid, { text: error.message })
+                    } else {
+                        await sock.sendMessage(jid, { 
+                            text: '❌ Sorry, I couldn\'t process your email. Please try again.' 
+                        })
+                    }
                 }
                 
                 return
@@ -106,12 +134,16 @@ We accept Visa, Mastercard, and Verve cards
 *Available Commands:*
 💰 /pay [amount] - Add money via card
 🏦 /balance - Check wallet balance
+🎫 /coupon [code] - Redeem coupon codes
 ℹ️ /myinfo - View your information
 
 *Card Payment Examples:*
 /pay 500 (adds ₦500 → 2000 tums)
 /pay 1000 (adds ₦1000 → 4000 tums)
 /pay 2500 (adds ₦2500 → 10000 tums)
+
+*Coupon Example:*
+/coupon SAVE100
 
 *Card Payment Info:*
 • Conversion Rate: ₦1 = 4 tums
@@ -128,9 +160,11 @@ I'm your wallet bot for collecting emails and managing your tums balance.
 *How to get started:*
 📧 Send me your email address (e.g., john@example.com)
 
-*After registering, you can:*
-💳 Add money via secure card payment
-🏦 Check your balance
+*After registering, you'll get:*
+🎁 1000 free tums as welcome bonus!
+💳 Ability to add money via secure card payment
+🏦 Wallet balance tracking
+🎫 Coupon redemption
 
 *💳 Payment Method: Card Only*
 • We accept Visa, Mastercard, Verve
@@ -144,6 +178,13 @@ I'm your wallet bot for collecting emails and managing your tums balance.
             }
             
             else if (command.startsWith('/pay')) {
+                // Rate limiting for payment commands
+                const payRateCheck = UserService.checkRateLimit(phoneNumber, 'payment')
+                if (!payRateCheck.allowed) {
+                    await sock.sendMessage(jid, { text: `💳 ${payRateCheck.message}\n\nThis prevents accidental duplicate payments.` })
+                    return
+                }
+
                 const user = await UserService.getUserByPhone(phoneNumber)
                 
                 if (!user || !user.email) {
@@ -240,6 +281,69 @@ _You'll get a confirmation once payment is successful_`
                 }
             }
             
+            else if (command.startsWith('/coupon')) {
+                // Rate limiting for coupon redemption
+                const couponRateCheck = UserService.checkRateLimit(phoneNumber, 'coupon')
+                if (!couponRateCheck.allowed) {
+                    await sock.sendMessage(jid, { text: `🎫 ${couponRateCheck.message}\n\nThis prevents coupon spam.` })
+                    return
+                }
+
+                const parts = command.split(' ')
+                if (parts.length < 2) {
+                    await sock.sendMessage(jid, { 
+                        text: `🎫 *How to redeem coupons:*
+
+*Format:* /coupon [code]
+
+*Examples:*
+/coupon WELCOME50
+/coupon SAVE100
+/coupon BONUS25
+
+*Tips:*
+• Coupon codes are case-insensitive
+• Each coupon can only be used once per user
+• Some coupons have expiry dates
+• You must register your email first
+
+💡 *Need to register?* Send your email address first!` 
+                    })
+                    return
+                }
+
+                const couponCode = parts[1].trim().toUpperCase()
+                
+                try {
+                    const result = await CouponService.redeemCoupon(phoneNumber, couponCode)
+                    
+                    const message = `🎉 *Coupon Redeemed Successfully!*
+
+🎫 Code: ${couponCode}
+🪙 Tums Added: *${result.coupon.amount} tums*
+💰 New Balance: *${result.newBalance} tums*
+📅 Redeemed: ${new Date().toLocaleString()}
+
+${result.coupon.description ? `📋 ${result.coupon.description}` : ''}
+
+*Available Commands:*
+🏦 /balance - Check current balance
+💳 /pay [amount] - Add more via card
+🎫 /coupon [code] - Redeem more coupons
+
+_Thanks for using our coupon system!_ 🎊`
+
+                    await sock.sendMessage(jid, { text: message })
+                    console.log(`🎫 Coupon redeemed: ${phoneNumber} - ${couponCode} - ${result.coupon.amount} tums`)
+
+                } catch (error) {
+                    console.error('❌ Coupon redemption error:', error.message)
+                    await sock.sendMessage(jid, { 
+                        text: `${error.message}\n\n💡 *Tips:*\n• Check your spelling\n• Make sure you're registered (send your email first)\n• Each coupon can only be used once\n\n🎫 Use: /coupon [code]` 
+                    })
+                }
+            }
+            
             else if (command === '/balance') {
                 const user = await UserService.getUserByPhone(phoneNumber)
                 
@@ -262,10 +366,16 @@ Use /pay [amount] to add money
 • Rate: ₦1 = 4 tums
 • Accepted: Visa, Mastercard, Verve
 
+🎫 *Redeem Coupons:*
+Use /coupon [code] to get free tums
+
 *Quick Top-up:*
 /pay 500 → 2000 tums
 /pay 1000 → 4000 tums
-/pay 2500 → 10000 tums`
+/pay 2500 → 10000 tums
+
+*Coupon Example:*
+/coupon SAVE100`
 
                 await sock.sendMessage(jid, { text: response })
             }
@@ -281,6 +391,9 @@ Use /pay [amount] to add money
                 }
                 
                 const balance = user.wallet_balance || 0
+                const transactionCount = user.transactions ? user.transactions.length : 0
+                const couponCount = user.transactions ? 
+                    user.transactions.filter(t => t.payment_method === 'coupon').length : 0
 
                 const response = `👤 *Your Information*
 
@@ -290,6 +403,8 @@ Use /pay [amount] to add money
 📅 *Registered:* ${new Date(user.created_at).toLocaleDateString()}
 
 💰 *Wallet Balance:* ${balance} tums
+📊 *Transactions:* ${transactionCount}
+🎫 *Coupons Used:* ${couponCount}
 
 *💳 Payment Method: Card Only*
 • Visa, Mastercard, Verve accepted
@@ -300,10 +415,12 @@ Use /pay [amount] to add money
 *Available Commands:*
 💰 /pay [amount] - Add money via card
 🏦 /balance - Check balance
+🎫 /coupon [code] - Redeem coupons
 
 *Quick Examples:*
 /pay 1000 (₦1000 → 4000 tums)
-/pay 2500 (₦2500 → 10000 tums)`
+/pay 2500 (₦2500 → 10000 tums)
+/coupon WELCOME50`
 
                 await sock.sendMessage(jid, { text: response })
             }
@@ -334,7 +451,45 @@ Use /pay [amount] to add money
 /pay 500 → Pay ₦500, get 2000 tums
 /pay 1000 → Pay ₦1000, get 4000 tums
 
+*Free Tums:*
+🎫 Use /coupon [code] to redeem coupons
+
 _${methods.card.fees}_`
+
+                await sock.sendMessage(jid, { text: response })
+            }
+
+            else if (command === '/help' || command === 'help') {
+                const response = `📖 *Help & Commands*
+
+*Getting Started:*
+📧 Send your email to register and get 1000 free tums
+
+*Main Commands:*
+👋 /start - Welcome message
+💰 /pay [amount] - Add money via card
+🏦 /balance - Check wallet balance
+🎫 /coupon [code] - Redeem coupon codes
+ℹ️ /myinfo - Account information
+💳 /cards - Payment methods info
+❓ /help - This help menu
+
+*Examples:*
+john.doe@gmail.com (register email)
+/pay 500 (add ₦500 → 2000 tums)
+/balance (check balance)
+/coupon WELCOME50 (redeem coupon)
+
+*Payment Info:*
+💳 Card payments only (Visa, Mastercard, Verve)
+💰 Minimum: ₦500 → 2000 tums
+🎁 Welcome bonus: 1000 tums
+
+*Rate Limiting:*
+⚠️ 5 messages per minute to prevent spam
+
+*Note:*
+🔒 Email cannot be changed once registered`
 
                 await sock.sendMessage(jid, { text: response })
             }
@@ -345,12 +500,14 @@ _${methods.card.fees}_`
                     text: `🤔 I didn't understand that message.
 
 *Available Commands:*
-📧 Send your email to register
+📧 Send your email to register (get 1000 free tums!)
 💬 /start - Welcome message
 💳 /pay [amount] - Add money via card
 🏦 /balance - Check wallet balance
+🎫 /coupon [code] - Redeem coupon codes
 ℹ️ /myinfo - Account information
 💳 /cards - Payment methods info
+❓ /help - Help & commands
 
 *Payment Method:*
 💳 Card payments only (Visa, Mastercard, Verve)
@@ -358,15 +515,22 @@ _${methods.card.fees}_`
 *Examples:*
 john.doe@gmail.com
 /pay 500
-/balance` 
+/balance
+/coupon SAVE100` 
                 })
             }
             
         } catch (error) {
             console.error('❌ Error processing message:', error)
-            await sock.sendMessage(jid, { 
-                text: '❌ Sorry, something went wrong. Please try again or contact support.\n\n💳 Remember: We only accept card payments (Visa, Mastercard, Verve)' 
-            })
+            
+            // Check if it's a rate limit error
+            if (error.message && error.message.includes('Rate limit')) {
+                await sock.sendMessage(jid, { text: error.message })
+            } else {
+                await sock.sendMessage(jid, { 
+                    text: '❌ Sorry, something went wrong. Please try again or contact support.\n\n💳 Remember: We only accept card payments (Visa, Mastercard, Verve)' 
+                })
+            }
         }
     }
 }

@@ -5,6 +5,7 @@ const pino = require('pino')
 const { handleMessage } = require('./handlers')
 const { testConnection } = require('../config/database')
 const { setWhatsAppSocket } = require('../webhook/paymentWebhook')
+const UserService = require('../services/userService')
 
 async function connectToWhatsApp() {
     // Test database connection first
@@ -27,6 +28,12 @@ async function connectToWhatsApp() {
     // Set socket for webhook notifications
     setWhatsAppSocket(sock)
     
+    // Start rate limiting cleanup (every 5 minutes)
+    const rateLimitCleanup = setInterval(() => {
+        UserService.cleanupRateLimit()
+        console.log('🧹 Rate limit storage cleaned up')
+    }, 5 * 60 * 1000)
+    
     // QR Code handling
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update
@@ -39,10 +46,17 @@ async function connectToWhatsApp() {
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut
             console.log('Connection closed, reconnecting:', shouldReconnect)
+            
+            // Clear rate limit cleanup interval
+            clearInterval(rateLimitCleanup)
+            
             if (shouldReconnect) connectToWhatsApp()
         } else if (connection === 'open') {
             console.log('✅ Bot connected successfully!')
             console.log('📧 Ready to collect emails and process payments')
+            console.log('🎫 Coupon system enabled')
+            console.log('⚡ Rate limiting active (5 req/min per user)')
+            console.log('🎁 Signup bonus: 1000 tums')
         }
     })
     
