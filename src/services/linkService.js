@@ -80,8 +80,8 @@ class LinkService {
             const whatsappUrl = `https://wa.me/${formattedTargetPhone}?text=${encodeURIComponent(defaultMessage)}`
             
             // Create redirect and wey links
-            const redirectUrl = `${process.env.SHORT_DOMAIN || ' https://wey.name.ng'}/${shortCode}`
-            const weyUrl = `${process.env.SHORT_DOMAIN || ' https://wey.name.ng'}/wey/${shortCode}`
+            const redirectUrl = `${process.env.SHORT_DOMAIN || ' https://d-wey.onrender.com'}/${shortCode}`
+            const weyUrl = `${process.env.SHORT_DOMAIN || ' https://d-wey.onrender.com'}/wey/${shortCode}`
 
             // Calculate expiration (24 hours from now)
             const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
