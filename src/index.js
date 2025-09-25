@@ -1,30 +1,40 @@
 require('dotenv').config()
 const express = require('express')
 const { connectToWhatsApp } = require('./bot/connection')
-const { handlePaystackWebhook, cleanupAbandonedPayments } = require('./webhook/paymentWebhook')
+const { handlePaystackWebhook } = require('./webhook/paymentWebhook')
+const DWeyWebServer = require('./server/dWeyWebServer')
 const PaymentService = require('./services/paymentService')
+const LinkService = require('./services/linkService')
 
 const app = express()
 const PORT = process.env.PORT || 3000
 
-// Middleware
-app.use(express.json())
-app.use(express.raw({ type: 'application/json' }))
+// Middleware for payment webhooks
+app.use('/webhook', express.json())
+app.use('/webhook', express.raw({ type: 'application/json' }))
 
 // Health check endpoint
 app.get('/', (req, res) => {
     res.json({ 
-        status: 'WhatsApp Email Collector Bot is running!',
+        service: 'd-wey WhatsApp Link Shortener',
+        status: 'running',
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
-        version: '2.0.0'
+        version: '1.0.0',
+        features: [
+            'WhatsApp link creation',
+            'Click tracking & analytics',
+            'Third-party verification',
+            'Custom short codes',
+            'Real-time reports',
+            'Payment processing'
+        ]
     })
 })
 
-// Health check endpoint with detailed status
+// Detailed health check
 app.get('/health', async (req, res) => {
     try {
-        const stats = await PaymentService.getTransactionStats()
         res.json({
             status: 'healthy',
             timestamp: new Date().toISOString(),
@@ -32,11 +42,10 @@ app.get('/health', async (req, res) => {
             services: {
                 whatsapp: 'connected',
                 database: 'connected',
-                webhook: 'active'
+                webhook: 'active',
+                geolocation: 'enabled'
             },
-            stats: stats || {
-                message: 'No transactions yet'
-            }
+            pricing: LinkService.TUMS_PRICING
         })
     } catch (error) {
         res.status(503).json({
@@ -47,15 +56,16 @@ app.get('/health', async (req, res) => {
     }
 })
 
-// Paystack webhook endpoint
+// Payment webhook endpoint
 app.post('/webhook/paystack', handlePaystackWebhook)
 
-// Admin endpoint to manually trigger cleanup (for testing)
-app.post('/admin/cleanup', async (req, res) => {
+// Admin endpoints for monitoring and maintenance
+app.post('/admin/cleanup-expired', async (req, res) => {
     try {
-        const count = await PaymentService.cleanupExpiredTransactions()
+        // This would be called by a cron job
+        const expiredCount = await PaymentService.cleanupExpiredTransactions()
         res.json({
-            message: `Cleaned up ${count} expired transactions`,
+            message: `Cleaned up ${expiredCount} expired transactions`,
             timestamp: new Date().toISOString()
         })
     } catch (error) {
@@ -66,7 +76,22 @@ app.post('/admin/cleanup', async (req, res) => {
     }
 })
 
-// Admin endpoint to get transaction statistics
+app.post('/admin/process-billing', async (req, res) => {
+    try {
+        // Daily billing for active links
+        await LinkService.processDailyBilling()
+        res.json({
+            message: 'Daily billing processed',
+            timestamp: new Date().toISOString()
+        })
+    } catch (error) {
+        res.status(500).json({
+            error: 'Billing failed',
+            message: error.message
+        })
+    }
+})
+
 app.get('/admin/stats', async (req, res) => {
     try {
         const stats = await PaymentService.getTransactionStats()
@@ -82,119 +107,154 @@ app.get('/admin/stats', async (req, res) => {
     }
 })
 
-// Admin endpoint to verify a specific payment
-app.post('/admin/verify/:reference', async (req, res) => {
-    try {
-        const { reference } = req.params
-        
-        if (!PaymentService.isValidReference(reference)) {
-            return res.status(400).json({
-                error: 'Invalid reference format'
-            })
-        }
-
-        const verification = await PaymentService.verifyPayment(reference)
-        res.json({
-            reference,
-            verification,
-            timestamp: new Date().toISOString()
-        })
-    } catch (error) {
-        res.status(500).json({
-            error: 'Verification failed',
-            message: error.message
-        })
-    }
-})
-
 async function startApplication() {
-    console.log('🚀 Starting Enhanced Email Collector Bot v2.0...')
+    console.log('🚀 Starting d-wey Application v1.0...')
     
     try {
-        // Start WhatsApp bot
+        // Start WhatsApp bot first
+        console.log('🤖 Starting WhatsApp Bot...')
         await connectToWhatsApp()
         console.log('✅ WhatsApp Bot connected!')
         
-        // Start webhook server
-        const server = app.listen(PORT, () => {
-            console.log(`🌐 Webhook server running on port ${PORT}`)
-            console.log(`📡 Webhook URL: ${process.env.RENDER_EXTERNAL_URL || 'http://localhost:' + PORT}/webhook/paystack`)
-            console.log(`🏥 Health check: ${process.env.RENDER_EXTERNAL_URL || 'http://localhost:' + PORT}/health`)
-        })
+        // Start the main d-wey web server for redirects
+        console.log('🌐 Starting d-wey Web Server...')
+        const dWeyServer = new DWeyWebServer()
+        await dWeyServer.start(PORT)
+        console.log('✅ d-wey Web Server started!')
         
-        // Start cleanup scheduler (runs every 30 minutes)
-        console.log('🧹 Starting transaction cleanup scheduler...')
-        const cleanupInterval = setInterval(async () => {
+        // Start webhook server on different port if in production
+        let webhookServer
+        if (process.env.NODE_ENV === 'production') {
+            const webhookPort = PORT + 1
+            webhookServer = app.listen(webhookPort, () => {
+                console.log(`📡 Webhook server running on port ${webhookPort}`)
+                console.log(`💳 Webhook URL: ${process.env.RENDER_EXTERNAL_URL}/webhook/paystack`)
+            })
+        } else {
+            // In development, use the same server
+            webhookServer = app.listen(PORT + 1, () => {
+                console.log(`📡 Webhook server running on port ${PORT + 1}`)
+            })
+        }
+        
+        // Start scheduled tasks
+        console.log('⏰ Starting scheduled tasks...')
+        
+        // Daily billing scheduler (runs every 24 hours)
+        const billingInterval = setInterval(async () => {
             try {
-                console.log('🧹 Running scheduled cleanup...')
+                console.log('💰 Running scheduled billing...')
+                await LinkService.processDailyBilling()
+                console.log('✅ Scheduled billing completed')
+            } catch (error) {
+                console.error('❌ Scheduled billing error:', error.message)
+            }
+        }, 24 * 60 * 60 * 1000) // 24 hours
+
+        // Payment cleanup scheduler (runs every 2 hours)
+        const paymentCleanupInterval = setInterval(async () => {
+            try {
+                console.log('🧹 Running payment cleanup...')
                 const expiredCount = await PaymentService.cleanupExpiredTransactions()
-                const abandonedCount = await cleanupAbandonedPayments()
-                
-                if (expiredCount > 0 || abandonedCount > 0) {
-                    console.log(`✅ Cleanup completed: ${expiredCount} expired, ${abandonedCount} abandoned`)
-                } else {
-                    console.log('✅ Cleanup completed: No transactions to clean')
+                if (expiredCount > 0) {
+                    console.log(`✅ Cleaned up ${expiredCount} expired payments`)
                 }
             } catch (error) {
-                console.error('❌ Scheduled cleanup error:', error.message)
+                console.error('❌ Payment cleanup error:', error.message)
             }
-        }, 30 * 60 * 1000) // 30 minutes
+        }, 2 * 60 * 60 * 1000) // 2 hours
+
+        // Location cache cleanup (runs every hour)
+        const LocationService = require('./services/locationService')
+        const locationCleanupInterval = setInterval(() => {
+            try {
+                LocationService.cleanupCache()
+                console.log('🧹 Location cache cleaned up')
+            } catch (error) {
+                console.error('❌ Location cleanup error:', error.message)
+            }
+        }, 60 * 60 * 1000) // 1 hour
 
         // Run initial cleanup after 1 minute
         setTimeout(async () => {
             console.log('🧹 Running initial cleanup...')
             try {
                 const expiredCount = await PaymentService.cleanupExpiredTransactions()
-                console.log(`✅ Initial cleanup: ${expiredCount} expired transactions handled`)
+                await LinkService.processDailyBilling()
+                console.log(`✅ Initial cleanup: ${expiredCount} expired payments processed`)
             } catch (error) {
                 console.error('❌ Initial cleanup error:', error.message)
             }
         }, 60000) // 1 minute
 
         // Log startup completion
-        console.log('🎉 Application started successfully!')
+        console.log('🎉 d-wey Application started successfully!')
+        console.log('')
         console.log('📊 Features enabled:')
-        console.log('  ✅ Card payments (Visa, Mastercard, Verve)')
-        console.log('  ✅ Payment failure notifications')
-        console.log('  ✅ Payment cancellation notifications')
-        console.log('  ✅ Automatic transaction cleanup')
-        console.log('  ✅ Payment dispute handling')
-        console.log('  ✅ Payment reversal support')
-        console.log('  ✅ Enhanced error messages')
-        console.log('  ✅ Admin endpoints for monitoring')
+        console.log('  ✅ WhatsApp link shortening')
+        console.log('  ✅ Click tracking & analytics')
+        console.log('  ✅ Third-party verification')
+        console.log('  ✅ Custom short codes')
+        console.log('  ✅ Real-time geolocation')
+        console.log('  ✅ Daily billing system')
+        console.log('  ✅ Payment processing (Paystack)')
+        console.log('  ✅ Advanced analytics with charts')
+        console.log('  ✅ Rate limiting & security')
+        console.log('')
+        console.log('🔗 Service URLs:')
+        console.log(`  📱 Redirect: ${process.env.SHORT_DOMAIN || 'http://localhost:' + PORT}/:shortcode`)
+        console.log(`  🔍 Verify: ${process.env.SHORT_DOMAIN || 'http://localhost:' + PORT}/wey/:shortcode`)
+        console.log(`  🏥 Health: ${process.env.SHORT_DOMAIN || 'http://localhost:' + PORT}/health`)
+        console.log(`  📡 Webhook: ${process.env.RENDER_EXTERNAL_URL || 'http://localhost:' + (PORT + 1)}/webhook/paystack`)
+        console.log('')
+        console.log('💰 Pricing Structure:')
+        Object.entries(LinkService.TUMS_PRICING).forEach(([key, value]) => {
+            const formatted = key.replace(/_/g, ' ').toLowerCase()
+            console.log(`  • ${formatted}: ${value} tums`)
+        })
 
         // Handle graceful shutdown
         const gracefulShutdown = (signal) => {
             console.log(`🛑 Received ${signal}, shutting down gracefully...`)
             
-            // Stop the cleanup scheduler
-            clearInterval(cleanupInterval)
-            console.log('🧹 Cleanup scheduler stopped')
+            // Stop all scheduled tasks
+            clearInterval(billingInterval)
+            clearInterval(paymentCleanupInterval)
+            clearInterval(locationCleanupInterval)
+            console.log('⏰ Scheduled tasks stopped')
             
-            // Close the server
-            server.close((err) => {
-                if (err) {
-                    console.error('❌ Error closing server:', err.message)
-                    process.exit(1)
-                }
-                
-                console.log('🌐 Server closed')
-                console.log('👋 Goodbye!')
+            // Close servers
+            if (dWeyServer) {
+                dWeyServer.stop()
+            }
+            
+            if (webhookServer) {
+                webhookServer.close((err) => {
+                    if (err) {
+                        console.error('❌ Error closing webhook server:', err.message)
+                        process.exit(1)
+                    }
+                    
+                    console.log('📡 Webhook server closed')
+                    console.log('👋 d-wey shutdown complete!')
+                    process.exit(0)
+                })
+            } else {
                 process.exit(0)
-            })
+            }
             
-            // Force close after 10 seconds
+            // Force close after 15 seconds
             setTimeout(() => {
                 console.error('⚡ Force closing after timeout')
                 process.exit(1)
-            }, 10000)
+            }, 15000)
         }
         
         process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
         process.on('SIGINT', () => gracefulShutdown('SIGINT'))
         
     } catch (error) {
-        console.error('❌ Failed to start application:', error)
+        console.error('❌ Failed to start d-wey application:', error)
         console.error('🔍 Error details:', error.stack)
         process.exit(1)
     }
