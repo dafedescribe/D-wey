@@ -350,7 +350,7 @@ class LinkService {
         else if (ua.includes('opera')) browser = 'opera'
 
         // OS detection
-        let os = 'unknown'wn'
+        let os = 'unknown'
         if (ua.includes('windows')) os = 'windows'
         else if (ua.includes('mac')) os = 'macos'
         else if (ua.includes('android')) os = 'android'
