@@ -43,19 +43,22 @@ class LinkService {
         return cleanNumber
     }
 
-    // Create WhatsApp redirect link
+    // Create WhatsApp redirect link - FIXED VERSION
     static async createWhatsAppLink(creatorPhone, targetPhone, customShortCode = null, customMessage = null) {
         try {
+            console.log(`🔧 Creating link: ${creatorPhone} -> ${targetPhone}, custom: ${customShortCode}`)
+            
             // Validate creator exists and has sufficient balance
             const creator = await UserService.getUserByPhone(creatorPhone)
             if (!creator || !creator.email) {
                 throw new Error('Please register with email first')
             }
 
-            // Calculate total cost
+            // Calculate total cost - FIXED LOGIC
             let totalCost = this.TUMS_PRICING.CREATE_LINK
-            if (customShortCode) {
+            if (customShortCode && customShortCode.trim()) {
                 totalCost += this.TUMS_PRICING.CUSTOM_SHORTCODE
+                console.log(`💰 Custom shortcode requested, total cost: ${totalCost}`)
             }
 
             if (creator.wallet_balance < totalCost) {
@@ -65,13 +68,17 @@ class LinkService {
             // Validate and format target phone number
             const formattedTargetPhone = this.validatePhoneNumber(targetPhone)
 
-            // Handle short code generation/validation
+            // Handle short code generation/validation - FIXED
             let shortCode
-            if (customShortCode) {
-                shortCode = await this.generateCustomShortCode(customShortCode)
+            if (customShortCode && customShortCode.trim()) {
+                console.log(`🏷️ Processing custom shortcode: ${customShortCode}`)
+                shortCode = await this.generateCustomShortCode(customShortCode.trim())
             } else {
+                console.log(`🎲 Generating random shortcode`)
                 shortCode = await this.generateUniqueShortCode()
             }
+
+            console.log(`✅ Final shortcode: ${shortCode}`)
 
             // Create default message if none provided
             const defaultMessage = customMessage || `Hello! I'd like to chat with you.`
@@ -80,13 +87,13 @@ class LinkService {
             const whatsappUrl = `https://wa.me/${formattedTargetPhone}?text=${encodeURIComponent(defaultMessage)}`
             
             // Create redirect and wey links
-            const redirectUrl = `${process.env.SHORT_DOMAIN || ' https://d-wey.onrender.com'}/${shortCode}`
-            const weyUrl = `${process.env.SHORT_DOMAIN || ' https://d-wey.onrender.com'}/wey/${shortCode}`
+            const redirectUrl = `${process.env.SHORT_DOMAIN || 'https://d-wey.com'}/${shortCode}`
+            const weyUrl = `${process.env.SHORT_DOMAIN || 'https://d-wey.com'}/wey/${shortCode}`
 
             // Calculate expiration (24 hours from now)
             const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
 
-            // Create link record
+            // Create link record - FIXED DATA STRUCTURE
             const linkData = {
                 creator_phone: creatorPhone,
                 target_phone: formattedTargetPhone,
@@ -95,15 +102,23 @@ class LinkService {
                 redirect_url: redirectUrl,
                 wey_url: weyUrl,
                 custom_message: customMessage,
-                is_custom_shortcode: !!customShortCode,
+                is_custom_shortcode: !!(customShortCode && customShortCode.trim()),
                 total_clicks: 0,
                 unique_clicks: 0,
                 wey_checks: 0,
                 is_active: true,
                 expires_at: expiresAt.toISOString(),
                 next_billing_at: expiresAt.toISOString(),
-                created_at: new Date().toISOString()
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
             }
+
+            console.log(`💾 Inserting link data:`, {
+                short_code: linkData.short_code,
+                creator_phone: linkData.creator_phone,
+                target_phone: linkData.target_phone,
+                is_custom: linkData.is_custom_shortcode
+            })
 
             const { data: newLink, error } = await supabase
                 .from('whatsapp_links')
@@ -111,7 +126,12 @@ class LinkService {
                 .select()
                 .single()
 
-            if (error) throw error
+            if (error) {
+                console.error(`❌ Database insert error:`, error)
+                throw new Error(`Database error: ${error.message}`)
+            }
+
+            console.log(`✅ Link created in database:`, newLink.id)
 
             // Deduct tums from creator's balance
             await UserService.deductFromWallet(
@@ -120,7 +140,7 @@ class LinkService {
                 `WhatsApp link created (${shortCode})`
             )
 
-            console.log(`🔗 WhatsApp link created: ${shortCode} -> ${formattedTargetPhone}`)
+            console.log(`🔗 WhatsApp link created: ${shortCode} -> ${formattedTargetPhone}, cost: ${totalCost}`)
             
             return {
                 link: newLink,
@@ -145,13 +165,20 @@ class LinkService {
         while (attempts < maxAttempts) {
             const shortCode = this.generateShortCode()
             
-            const { data: existing } = await supabase
+            const { data: existing, error } = await supabase
                 .from('whatsapp_links')
                 .select('id')
                 .eq('short_code', shortCode)
-                .single()
+                .maybeSingle()
+
+            if (error) {
+                console.error('❌ Error checking shortcode uniqueness:', error)
+                attempts++
+                continue
+            }
 
             if (!existing) {
+                console.log(`✅ Generated unique shortcode: ${shortCode}`)
                 return shortCode
             }
             attempts++
@@ -160,7 +187,7 @@ class LinkService {
         throw new Error('Failed to generate unique short code')
     }
 
-    // Handle custom short code with smart variations
+    // Handle custom short code with smart variations - FIXED
     static async generateCustomShortCode(requested) {
         const baseCode = requested.replace(/[^a-zA-Z0-9]/g, '').toLowerCase()
         
@@ -168,28 +195,48 @@ class LinkService {
             throw new Error('Custom short code must be at least 3 characters')
         }
 
+        if (baseCode.length > 20) {
+            throw new Error('Custom short code must be less than 20 characters')
+        }
+
+        console.log(`🔍 Checking custom shortcode: ${baseCode}`)
+
         // Try original first
-        const { data: existing } = await supabase
+        const { data: existing, error } = await supabase
             .from('whatsapp_links')
             .select('id')
             .eq('short_code', baseCode)
-            .single()
+            .maybeSingle()
+
+        if (error) {
+            console.error('❌ Error checking custom shortcode:', error)
+            throw new Error('Database error checking shortcode availability')
+        }
 
         if (!existing) {
+            console.log(`✅ Custom shortcode available: ${baseCode}`)
             return baseCode
         }
+
+        console.log(`⚠️ Shortcode taken, trying variations of: ${baseCode}`)
 
         // Try variations: baseCode1, baseCode2, etc.
         for (let i = 1; i <= 99; i++) {
             const variation = `${baseCode}${i}`
             
-            const { data: existingVar } = await supabase
+            const { data: existingVar, error: varError } = await supabase
                 .from('whatsapp_links')
                 .select('id')
                 .eq('short_code', variation)
-                .single()
+                .maybeSingle()
+
+            if (varError) {
+                console.error('❌ Error checking variation:', varError)
+                continue
+            }
 
             if (!existingVar) {
+                console.log(`✅ Found available variation: ${variation}`)
                 return variation
             }
         }
@@ -197,46 +244,66 @@ class LinkService {
         throw new Error(`Custom short code '${requested}' and variations are taken`)
     }
 
-    // Get link by short code
+    // Get link by short code - FIXED
     static async getLinkByShortCode(shortCode) {
         try {
+            console.log(`🔍 Looking up shortcode: ${shortCode}`)
+            
             const { data, error } = await supabase
                 .from('whatsapp_links')
                 .select('*')
                 .eq('short_code', shortCode)
                 .eq('is_active', true)
-                .single()
+                .maybeSingle()
 
-            if (error && error.code !== 'PGRST116') throw error
+            if (error) {
+                console.error('❌ Error getting link:', error)
+                return null
+            }
             
+            if (!data) {
+                console.log(`❌ Link not found: ${shortCode}`)
+                return null
+            }
+
             // Check if link is expired
-            if (data && new Date(data.expires_at) < new Date()) {
+            if (new Date(data.expires_at) < new Date()) {
+                console.log(`⏰ Link expired: ${shortCode}`)
                 await this.deactivateLink(shortCode, 'expired')
                 return null
             }
 
+            console.log(`✅ Link found: ${shortCode} -> ${data.target_phone}`)
             return data
+            
         } catch (error) {
             console.error('❌ Error getting link:', error.message)
             return null
         }
     }
 
-    // Track click on redirect link
+    // Track click on redirect link - FIXED SUPABASE.RAW ISSUE
     static async trackClick(linkId, ipAddress, userAgent, location = null) {
         try {
+            console.log(`📊 Tracking click for link: ${linkId}`)
+            
             // Hash IP for privacy
             const hashedIp = crypto.createHash('sha256').update(ipAddress).digest('hex')
             
             // Check if this hashed IP has clicked before (for unique tracking)
-            const { data: existingClick } = await supabase
+            const { data: existingClick, error: checkError } = await supabase
                 .from('link_clicks')
                 .select('id')
                 .eq('link_id', linkId)
                 .eq('hashed_ip', hashedIp)
-                .single()
+                .maybeSingle()
+
+            if (checkError) {
+                console.error('❌ Error checking existing click:', checkError)
+            }
 
             const isUnique = !existingClick
+            console.log(`🔄 Click is ${isUnique ? 'unique' : 'repeat'}`)
 
             // Parse device and browser info
             const deviceInfo = this.parseUserAgent(userAgent)
@@ -258,26 +325,49 @@ class LinkService {
                 .from('link_clicks')
                 .insert([clickData])
 
-            if (clickError) throw clickError
-
-            // Update link statistics
-            const updateData = { 
-                total_clicks: supabase.raw('total_clicks + 1'),
-                last_clicked_at: new Date().toISOString()
-            }
-            
-            if (isUnique) {
-                updateData.unique_clicks = supabase.raw('unique_clicks + 1')
+            if (clickError) {
+                console.error('❌ Error inserting click:', clickError)
+                throw clickError
             }
 
+            console.log('✅ Click record inserted')
+
+            // Update link statistics - FIXED: NO MORE supabase.raw()
+            // Get current values first
+            const { data: currentLink, error: getCurrentError } = await supabase
+                .from('whatsapp_links')
+                .select('total_clicks, unique_clicks')
+                .eq('id', linkId)
+                .single()
+
+            if (getCurrentError) {
+                console.error('❌ Error getting current link stats:', getCurrentError)
+                throw getCurrentError
+            }
+
+            // Calculate new values
+            const newTotalClicks = (currentLink.total_clicks || 0) + 1
+            const newUniqueClicks = (currentLink.unique_clicks || 0) + (isUnique ? 1 : 0)
+
+            console.log(`📈 Updating stats: ${currentLink.total_clicks} -> ${newTotalClicks}, unique: ${currentLink.unique_clicks} -> ${newUniqueClicks}`)
+
+            // Update with calculated values
             const { error: updateError } = await supabase
                 .from('whatsapp_links')
-                .update(updateData)
+                .update({ 
+                    total_clicks: newTotalClicks,
+                    unique_clicks: newUniqueClicks,
+                    last_clicked_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                })
                 .eq('id', linkId)
 
-            if (updateError) throw updateError
+            if (updateError) {
+                console.error('❌ Error updating link stats:', updateError)
+                throw updateError
+            }
 
-            console.log(`📊 Click tracked: ${linkId} (unique: ${isUnique})`)
+            console.log(`✅ Click tracked successfully: ${linkId} (unique: ${isUnique})`)
             return { success: true, isUnique }
 
         } catch (error) {
@@ -286,9 +376,11 @@ class LinkService {
         }
     }
 
-    // Track wey link checks (third-party verification)
+    // Track wey link checks - FIXED
     static async trackWeyCheck(linkId, ipAddress, userAgent, location = null) {
         try {
+            console.log(`🔍 Tracking wey check for link: ${linkId}`)
+            
             const hashedIp = crypto.createHash('sha256').update(ipAddress).digest('hex')
             const deviceInfo = this.parseUserAgent(userAgent)
 
@@ -307,20 +399,40 @@ class LinkService {
                 .from('wey_checks')
                 .insert([checkData])
 
-            if (checkError) throw checkError
+            if (checkError) {
+                console.error('❌ Error inserting wey check:', checkError)
+                throw checkError
+            }
 
-            // Update wey check count
+            // Update wey check count - FIXED: NO MORE supabase.raw()
+            const { data: currentLink, error: getCurrentError } = await supabase
+                .from('whatsapp_links')
+                .select('wey_checks')
+                .eq('id', linkId)
+                .single()
+
+            if (getCurrentError) {
+                console.error('❌ Error getting current wey checks:', getCurrentError)
+                throw getCurrentError
+            }
+
+            const newWeyChecks = (currentLink.wey_checks || 0) + 1
+
             const { error: updateError } = await supabase
                 .from('whatsapp_links')
                 .update({ 
-                    wey_checks: supabase.raw('wey_checks + 1'),
-                    last_wey_check_at: new Date().toISOString()
+                    wey_checks: newWeyChecks,
+                    last_wey_check_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
                 })
                 .eq('id', linkId)
 
-            if (updateError) throw updateError
+            if (updateError) {
+                console.error('❌ Error updating wey check count:', updateError)
+                throw updateError
+            }
 
-            console.log(`🔍 Wey check tracked: ${linkId}`)
+            console.log(`✅ Wey check tracked: ${linkId}`)
             return { success: true, deviceInfo, hashedIp }
 
         } catch (error) {
@@ -368,7 +480,8 @@ class LinkService {
                 .update({ 
                     is_active: false,
                     deactivated_at: new Date().toISOString(),
-                    deactivation_reason: reason
+                    deactivation_reason: reason,
+                    updated_at: new Date().toISOString()
                 })
                 .eq('short_code', shortCode)
 
@@ -382,9 +495,11 @@ class LinkService {
         }
     }
 
-    // Get user's active links
+    // Get user's active links - FIXED
     static async getUserLinks(phoneNumber) {
         try {
+            console.log(`🔍 Getting links for user: ${phoneNumber}`)
+            
             const { data, error } = await supabase
                 .from('whatsapp_links')
                 .select('*')
@@ -392,7 +507,12 @@ class LinkService {
                 .eq('is_active', true)
                 .order('created_at', { ascending: false })
 
-            if (error) throw error
+            if (error) {
+                console.error('❌ Error getting user links:', error)
+                throw error
+            }
+
+            console.log(`✅ Found ${data?.length || 0} active links for user: ${phoneNumber}`)
             return data || []
         } catch (error) {
             console.error('❌ Error getting user links:', error.message)
@@ -400,7 +520,41 @@ class LinkService {
         }
     }
 
-    // Process daily billing for active links
+    // Kill/delete link permanently
+    static async killLink(phoneNumber, shortCode) {
+        try {
+            console.log(`🚫 Killing link: ${shortCode} by user: ${phoneNumber}`)
+            
+            // Verify ownership
+            const { data: link, error: getError } = await supabase
+                .from('whatsapp_links')
+                .select('*')
+                .eq('short_code', shortCode)
+                .eq('creator_phone', phoneNumber)
+                .maybeSingle()
+
+            if (getError) {
+                console.error('❌ Error checking link ownership:', getError)
+                throw new Error('Database error checking link ownership')
+            }
+
+            if (!link) {
+                throw new Error('Link not found or you are not the owner')
+            }
+
+            // Deactivate the link
+            await this.deactivateLink(shortCode, 'killed_by_owner')
+            
+            console.log(`✅ Link killed: ${shortCode}`)
+            return { success: true, message: `Link ${shortCode} has been permanently killed` }
+
+        } catch (error) {
+            console.error('❌ Error killing link:', error.message)
+            throw error
+        }
+    }
+
+    // Process daily billing for active links - FIXED
     static async processDailyBilling() {
         try {
             const now = new Date()
@@ -413,7 +567,10 @@ class LinkService {
                 .lte('next_billing_at', now.toISOString())
 
             if (error) throw error
-            if (!linksToBill || linksToBill.length === 0) return
+            if (!linksToBill || linksToBill.length === 0) {
+                console.log('💰 No links need billing')
+                return
+            }
 
             console.log(`💰 Processing daily billing for ${linksToBill.length} links`)
 
@@ -441,7 +598,8 @@ class LinkService {
                         .from('whatsapp_links')
                         .update({ 
                             next_billing_at: nextBilling.toISOString(),
-                            expires_at: nextBilling.toISOString()
+                            expires_at: nextBilling.toISOString(),
+                            updated_at: new Date().toISOString()
                         })
                         .eq('id', link.id)
 
@@ -454,32 +612,6 @@ class LinkService {
 
         } catch (error) {
             console.error('❌ Error processing daily billing:', error.message)
-        }
-    }
-
-    // Kill/delete link permanently
-    static async killLink(phoneNumber, shortCode) {
-        try {
-            // Verify ownership
-            const link = await supabase
-                .from('whatsapp_links')
-                .select('*')
-                .eq('short_code', shortCode)
-                .eq('creator_phone', phoneNumber)
-                .single()
-
-            if (!link.data) {
-                throw new Error('Link not found or you are not the owner')
-            }
-
-            // Deactivate the link
-            await this.deactivateLink(shortCode, 'killed_by_owner')
-            
-            return { success: true, message: `Link ${shortCode} has been permanently killed` }
-
-        } catch (error) {
-            console.error('❌ Error killing link:', error.message)
-            throw error
         }
     }
 }
