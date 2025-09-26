@@ -1,3 +1,9 @@
+// FIXED VERSION - Key issues resolved:
+// 1. Fixed case sensitivity with better command parsing
+// 2. Fixed ownership verification queries
+// 3. Added better error handling
+// 4. Fixed command splitting logic
+
 const UserService = require('../services/userService')
 const PaymentService = require('../services/paymentService')
 const CouponService = require('../services/couponService')
@@ -24,7 +30,12 @@ function handleMessage(sock) {
         console.log(`📨 ${phoneNumber} (${displayName}): ${text}`)
 
         try {
-            const command = text.toLowerCase().trim()
+            // FIXED: Better command parsing - normalize spaces and case
+            const normalizedText = text.trim().replace(/\s+/g, ' ')
+            const command = normalizedText.toLowerCase()
+            const parts = normalizedText.split(' ').filter(p => p.length > 0)
+
+            console.log(`🔧 Debug - Original: "${text}" | Command: "${command}" | Parts:`, parts)
 
             // Rate limiting
             const rateLimitCheck = UserService.checkRateLimit(phoneNumber, 'general')
@@ -77,8 +88,123 @@ function handleMessage(sock) {
                 return
             }
 
-            // CUSTOM LINK CREATION - NEW COMMAND FORMAT
-            if (command.startsWith('link ')) {
+            // ANALYTICS REQUEST - FIXED with better parsing and error handling
+            if (command.startsWith('report ') || (parts.length === 2 && parts[0].toLowerCase() === 'report')) {
+                const user = await UserService.getUserByPhone(phoneNumber)
+                
+                if (!user || !user.email) {
+                    await sock.sendMessage(jid, { text: '📧 Register with email first!' })
+                    return
+                }
+
+                // FIXED: Better shortcode extraction
+                let shortCode
+                if (parts.length >= 2) {
+                    shortCode = parts[1].trim()
+                } else {
+                    await sock.sendMessage(jid, { 
+                        text: `📊 *Get Analytics Report*\n\nUsage: report [shortcode]\nExample: report abc123\n\nCost: 20 tums\n\n_Get code from: my links_` 
+                    })
+                    return
+                }
+
+                console.log(`🔧 Debug - Report command: shortcode="${shortCode}"`)
+                
+                try {
+                    const report = await AnalyticsService.generateAnalyticsReport(phoneNumber, shortCode)
+                    const message = AnalyticsService.formatReportForWhatsApp(report, true)
+                    
+                    await sock.sendMessage(jid, { text: message })
+                } catch (error) {
+                    console.error(`❌ Report error for ${shortCode}:`, error.message)
+                    await sock.sendMessage(jid, { 
+                        text: `❌ ${error.message}\n\n_Make sure you own this link. Check: my links_` 
+                    })
+                }
+                return
+            }
+
+            // QUICK STATS - FIXED with better parsing
+            if (command.startsWith('stats ') || (parts.length === 2 && parts[0].toLowerCase() === 'stats')) {
+                const user = await UserService.getUserByPhone(phoneNumber)
+                
+                if (!user || !user.email) {
+                    await sock.sendMessage(jid, { text: '📧 Register with email first!' })
+                    return
+                }
+
+                // FIXED: Better shortcode extraction
+                let shortCode
+                if (parts.length >= 2) {
+                    shortCode = parts[1].trim()
+                } else {
+                    await sock.sendMessage(jid, { 
+                        text: `📊 *Quick Stats*\n\nUsage: stats [shortcode]\nExample: stats abc123\n\n_Free quick overview_\n_Get code from: my links_` 
+                    })
+                    return
+                }
+
+                console.log(`🔧 Debug - Stats command: shortcode="${shortCode}"`)
+                
+                try {
+                    const stats = await AnalyticsService.getQuickStats(shortCode, phoneNumber)
+                    
+                    let message = `📊 *Quick Stats - ${stats.shortCode}*\n\n`
+                    message += `👥 Total Clicks: ${stats.totalClicks}\n`
+                    message += `🔄 Unique Visitors: ${stats.uniqueClicks}\n`
+                    message += `🔍 Wey Checks: ${stats.weyChecks}\n`
+                    message += `⏰ Days Left: ${stats.daysLeft}\n`
+                    message += `🟢 Status: ${stats.isActive ? 'Active' : 'Inactive'}\n\n`
+                    message += `_Detailed charts: report ${stats.shortCode}_`
+                    
+                    await sock.sendMessage(jid, { text: message })
+                } catch (error) {
+                    console.error(`❌ Stats error for ${shortCode}:`, error.message)
+                    await sock.sendMessage(jid, { 
+                        text: `❌ ${error.message}\n\n_Make sure you own this link. Check: my links_` 
+                    })
+                }
+                return
+            }
+
+            // KILL LINK - FIXED with better parsing
+            if (command.startsWith('kill ') || (parts.length === 2 && parts[0].toLowerCase() === 'kill')) {
+                const user = await UserService.getUserByPhone(phoneNumber)
+                
+                if (!user || !user.email) {
+                    await sock.sendMessage(jid, { text: '📧 Register with email first!' })
+                    return
+                }
+
+                // FIXED: Better shortcode extraction
+                let shortCode
+                if (parts.length >= 2) {
+                    shortCode = parts[1].trim()
+                } else {
+                    await sock.sendMessage(jid, { 
+                        text: `🚫 *Delete Link*\n\nUsage: kill [shortcode]\nExample: kill abc123\n\n⚠️ This action cannot be undone!\n\n_Get code from: my links_` 
+                    })
+                    return
+                }
+
+                console.log(`🔧 Debug - Kill command: shortcode="${shortCode}"`)
+                
+                try {
+                    const result = await LinkService.killLink(phoneNumber, shortCode)
+                    await sock.sendMessage(jid, { 
+                        text: `✅ Link Deleted!\n\n🚫 *${shortCode}* is now permanently disabled.\n\nThe link will stop working immediately and no more daily fees will be charged.\n\n_Check remaining links: my links_` 
+                    })
+                } catch (error) {
+                    console.error(`❌ Kill error for ${shortCode}:`, error.message)
+                    await sock.sendMessage(jid, { 
+                        text: `❌ ${error.message}\n\n_Make sure you own this link. Check: my links_` 
+                    })
+                }
+                return
+            }
+
+            // CUSTOM LINK CREATION - FIXED command parsing
+            if (command.startsWith('link ') || (parts.length >= 2 && parts[0].toLowerCase() === 'link')) {
                 const user = await UserService.getUserByPhone(phoneNumber)
                 
                 if (!user || !user.email) {
@@ -87,8 +213,6 @@ function handleMessage(sock) {
                     })
                     return
                 }
-
-                const parts = text.trim().split(' ').filter(p => p.length > 0)
                 
                 if (parts.length < 2) {
                     await sock.sendMessage(jid, { 
@@ -99,6 +223,8 @@ function handleMessage(sock) {
 
                 const targetPhone = parts[1]
                 const customShortCode = parts.length >= 3 ? parts[2] : null
+                
+                console.log(`🔧 Debug - Link command: target="${targetPhone}", custom="${customShortCode}"`)
                 
                 try {
                     const result = await LinkService.createWhatsAppLink(
@@ -125,6 +251,7 @@ function handleMessage(sock) {
                     
                     await sock.sendMessage(jid, { text: message })
                 } catch (error) {
+                    console.error(`❌ Link creation error:`, error.message)
                     await sock.sendMessage(jid, { 
                         text: `❌ ${error.message}` 
                     })
@@ -177,77 +304,6 @@ function handleMessage(sock) {
                 return
             }
 
-            // ANALYTICS REQUEST - FIXED OWNERSHIP CHECK
-            if (command.startsWith('report ')) {
-                const user = await UserService.getUserByPhone(phoneNumber)
-                
-                if (!user || !user.email) {
-                    await sock.sendMessage(jid, { text: '📧 Register with email first!' })
-                    return
-                }
-
-                const parts = command.split(' ')
-                if (parts.length < 2) {
-                    await sock.sendMessage(jid, { 
-                        text: `📊 *Get Analytics Report*\n\nUsage: report [shortcode]\nExample: report abc123\n\nCost: 20 tums\n\n_Get code from: my links_` 
-                    })
-                    return
-                }
-
-                const shortCode = parts[1].trim()
-                
-                try {
-                    const report = await AnalyticsService.generateAnalyticsReport(phoneNumber, shortCode)
-                    const message = AnalyticsService.formatReportForWhatsApp(report, true)
-                    
-                    await sock.sendMessage(jid, { text: message })
-                } catch (error) {
-                    await sock.sendMessage(jid, { 
-                        text: `❌ ${error.message}\n\n_Make sure you own this link. Check: my links_` 
-                    })
-                }
-                return
-            }
-
-            // QUICK STATS - FIXED OWNERSHIP CHECK
-            if (command.startsWith('stats ')) {
-                const user = await UserService.getUserByPhone(phoneNumber)
-                
-                if (!user || !user.email) {
-                    await sock.sendMessage(jid, { text: '📧 Register with email first!' })
-                    return
-                }
-
-                const parts = command.split(' ')
-                if (parts.length < 2) {
-                    await sock.sendMessage(jid, { 
-                        text: `📊 *Quick Stats*\n\nUsage: stats [shortcode]\nExample: stats abc123\n\n_Free quick overview_\n_Get code from: my links_` 
-                    })
-                    return
-                }
-
-                const shortCode = parts[1].trim()
-                
-                try {
-                    const stats = await AnalyticsService.getQuickStats(shortCode, phoneNumber)
-                    
-                    let message = `📊 *Quick Stats - ${stats.shortCode}*\n\n`
-                    message += `👥 Total Clicks: ${stats.totalClicks}\n`
-                    message += `🔄 Unique Visitors: ${stats.uniqueClicks}\n`
-                    message += `🔍 Wey Checks: ${stats.weyChecks}\n`
-                    message += `⏰ Days Left: ${stats.daysLeft}\n`
-                    message += `🟢 Status: ${stats.isActive ? 'Active' : 'Inactive'}\n\n`
-                    message += `_Detailed charts: report ${stats.shortCode}_`
-                    
-                    await sock.sendMessage(jid, { text: message })
-                } catch (error) {
-                    await sock.sendMessage(jid, { 
-                        text: `❌ ${error.message}\n\n_Make sure you own this link. Check: my links_` 
-                    })
-                }
-                return
-            }
-
             // MY LINKS - ENHANCED DISPLAY
             if (command.match(/(my.*links|list.*links|show.*links|links)/i)) {
                 const user = await UserService.getUserByPhone(phoneNumber)
@@ -297,38 +353,6 @@ function handleMessage(sock) {
                 return
             }
 
-            // KILL LINK - FIXED OWNERSHIP CHECK
-            if (command.startsWith('kill ')) {
-                const user = await UserService.getUserByPhone(phoneNumber)
-                
-                if (!user || !user.email) {
-                    await sock.sendMessage(jid, { text: '📧 Register with email first!' })
-                    return
-                }
-
-                const parts = command.split(' ')
-                if (parts.length < 2) {
-                    await sock.sendMessage(jid, { 
-                        text: `🚫 *Delete Link*\n\nUsage: kill [shortcode]\nExample: kill abc123\n\n⚠️ This action cannot be undone!\n\n_Get code from: my links_` 
-                    })
-                    return
-                }
-
-                const shortCode = parts[1].trim()
-                
-                try {
-                    const result = await LinkService.killLink(phoneNumber, shortCode)
-                    await sock.sendMessage(jid, { 
-                        text: `✅ Link Deleted!\n\n🚫 *${shortCode}* is now permanently disabled.\n\nThe link will stop working immediately and no more daily fees will be charged.\n\n_Check remaining links: my links_` 
-                    })
-                } catch (error) {
-                    await sock.sendMessage(jid, { 
-                        text: `❌ ${error.message}\n\n_Make sure you own this link. Check: my links_` 
-                    })
-                }
-                return
-            }
-
             // PAYMENT HANDLING - Same as before
             if (command.match(/(pay|buy|add|money|top.*up|purchase)/i) && !command.startsWith('/')) {
                 const user = await UserService.getUserByPhone(phoneNumber)
@@ -362,7 +386,6 @@ function handleMessage(sock) {
                 }
 
                 try {
-                    const parts = command.split(' ')
                     if (parts.length < 2) {
                         await sock.sendMessage(jid, { text: `💳 How much?\n\nTry: pay 500` })
                         return
@@ -404,7 +427,6 @@ function handleMessage(sock) {
                     return
                 }
 
-                const parts = command.split(' ')
                 if (parts.length < 2) {
                     await sock.sendMessage(jid, { text: `🎫 What's the code?\n\nTry: coupon SAVE100` })
                     return
