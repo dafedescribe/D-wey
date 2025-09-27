@@ -3,9 +3,7 @@ const cors = require('cors')
 const helmet = require('helmet')
 const rateLimit = require('express-rate-limit')
 const LinkService = require('../services/linkService')
-const AnalyticsService = require('../services/analyticsService')
 const LocationService = require('../services/locationService')
-const UserService = require('../services/userService')
 
 class DWeyWebServer {
     constructor() {
@@ -15,26 +13,20 @@ class DWeyWebServer {
     }
 
     setupMiddleware() {
-        // Trust proxy for accurate IP detection
         this.app.set('trust proxy', true)
-        
-        // Security middleware
         this.app.use(helmet())
         this.app.use(cors())
         
-        // Rate limiting
         const limiter = rateLimit({
-            windowMs: 15 * 60 * 1000, // 15 minutes
-            max: 1000, // Higher limit for redirect service
+            windowMs: 15 * 60 * 1000,
+            max: 1000,
             message: 'Too many requests, please try again later'
         })
         this.app.use(limiter)
 
-        // Body parsing
         this.app.use(express.json())
         this.app.use(express.urlencoded({ extended: true }))
 
-        // Request logging
         this.app.use((req, res, next) => {
             console.log(`📥 ${req.method} ${req.url} - IP: ${req.ip}`)
             next()
@@ -51,54 +43,50 @@ class DWeyWebServer {
             })
         })
 
-        // Main redirect route - /:shortCode
+        // STEP 1: Intermediate redirect page - /:shortCode
         this.app.get('/:shortCode', async (req, res) => {
             const { shortCode } = req.params
-            console.log(`🔗 Redirect requested: ${shortCode}`)
+            console.log(`🔗 Step 1 - Intermediate redirect: ${shortCode}`)
             
             try {
-                // Get link from database
                 const link = await LinkService.getLinkByShortCode(shortCode)
                 
                 if (!link) {
-                    console.log(`❌ Link not found: ${shortCode}`)
                     return this.sendNotFoundResponse(res, shortCode)
                 }
 
-                // Get user's real IP
                 const clientIP = this.getRealIP(req)
                 const userAgent = req.get('User-Agent') || 'unknown'
-                
-                console.log(`📍 Processing click from IP: ${clientIP}`)
                 
                 // Get location data
                 let location = null
                 try {
                     const locationData = await LocationService.getCachedLocation(clientIP)
                     location = LocationService.formatLocation(locationData)
-                    console.log(`📍 Location: ${location}`)
                 } catch (error) {
                     console.log('⚠️ Location detection failed:', error.message)
                 }
 
-                // Track the click BEFORE redirect
-                try {
-                    await LinkService.trackClick(link.id, clientIP, userAgent, location)
-                    console.log('✅ Click tracked successfully')
-                } catch (trackError) {
-                    console.error('❌ Click tracking failed:', trackError.message)
-                    // Continue with redirect even if tracking fails
-                }
+                // Parse device info with client hints if available
+                const deviceInfo = this.parseDeviceInfo(req, userAgent)
 
-                // Perform redirect to WhatsApp
-                console.log(`🚀 Redirecting to: ${link.whatsapp_url}`)
+                // Store device info for potential wey verification
+                const verificationId = await LinkService.storeDeviceForWeyCheck(
+                    shortCode, 
+                    deviceInfo, 
+                    clientIP
+                )
+
+                // Track the click BEFORE redirect
+                await LinkService.trackClick(link.id, clientIP, userAgent, location)
+
+                console.log(`🚀 Step 2 - Redirecting to: ${link.whatsapp_url}`)
                 
-                // Send redirect with proper headers
+                // Direct redirect to WhatsApp (no intermediate page needed)
                 res.writeHead(302, {
                     'Location': link.whatsapp_url,
                     'Cache-Control': 'no-cache, no-store, must-revalidate',
-                    'Pragma': 'no-cache',
-                    'Expires': '0'
+                    'Set-Cookie': `dwey_verification=${verificationId}; Path=/; Max-Age=300; HttpOnly`
                 })
                 res.end()
 
@@ -114,18 +102,19 @@ class DWeyWebServer {
             console.log(`🔍 Wey verification requested: ${shortCode}`)
             
             try {
-                // Get link from database (no ownership check needed for verification)
                 const link = await LinkService.getLinkByShortCode(shortCode)
                 
                 if (!link) {
-                    console.log(`❌ Link not found for wey check: ${shortCode}`)
                     return this.sendWeyNotFound(res, shortCode)
                 }
 
-                // Get user's real IP and device info
                 const clientIP = this.getRealIP(req)
                 const userAgent = req.get('User-Agent') || 'unknown'
                 
+                // Get verification ID from cookie
+                const cookies = this.parseCookies(req.get('Cookie') || '')
+                const verificationId = cookies.dwey_verification || null
+
                 // Get location data
                 let location = null
                 try {
@@ -136,29 +125,33 @@ class DWeyWebServer {
                 }
 
                 // Track the wey check
-                const trackingResult = await LinkService.trackWeyCheck(link.id, clientIP, userAgent, location)
+                const trackingResult = await LinkService.trackWeyCheck(
+                    link.id, 
+                    verificationId,
+                    clientIP, 
+                    userAgent, 
+                    location
+                )
                 
                 if (trackingResult.success) {
-                    // Generate third-party verification report
-                    const report = await AnalyticsService.generateThirdPartyReport(
-                        shortCode, 
-                        trackingResult.deviceInfo, 
-                        trackingResult.hashedIp,
-                        location
+                    // Generate wey verification report
+                    const report = await LinkService.generateWeyReport(
+                        shortCode,
+                        trackingResult.deviceInfo,
+                        location,
+                        new Date().toISOString()
                     )
                     
-                    // Send user directly to WhatsApp with pre-filled verification message
-                    const verificationMessage = this.createVerificationMessage(report)
+                    // Send user to WhatsApp with pre-filled verification report
                     const botNumber = process.env.BOT_PHONE_NUMBER || '2348012345678'
-                    const whatsappUrl = `https://wa.me/${botNumber}?text=${encodeURIComponent(verificationMessage)}`
+                    const whatsappUrl = `https://wa.me/${botNumber}?text=${encodeURIComponent(report)}`
                     
                     console.log(`✅ Wey check processed, redirecting to WhatsApp`)
                     
                     res.writeHead(302, {
                         'Location': whatsappUrl,
                         'Cache-Control': 'no-cache, no-store, must-revalidate',
-                        'Pragma': 'no-cache',
-                        'Expires': '0'
+                        'Set-Cookie': 'dwey_verification=; Path=/; Max-Age=0; HttpOnly' // Clear cookie
                     })
                     res.end()
                 } else {
@@ -171,8 +164,8 @@ class DWeyWebServer {
             }
         })
 
-        // API endpoint for quick link info (optional)
-        this.app.get('/api/info/:shortCode', async (req, res) => {
+        // API endpoint for basic link stats (for third-party access)
+        this.app.get('/api/stats/:shortCode', async (req, res) => {
             try {
                 const { shortCode } = req.params
                 
@@ -182,23 +175,72 @@ class DWeyWebServer {
                     return res.status(404).json({ error: 'Link not found' })
                 }
 
-                // Return basic public info only
-                const info = {
+                // Return basic public stats only
+                const stats = {
                     shortCode: link.short_code,
                     isActive: link.is_active,
                     totalClicks: link.total_clicks,
                     uniqueClicks: link.unique_clicks,
                     weyChecks: link.wey_checks,
                     createdAt: link.created_at,
-                    expiresAt: link.expires_at
+                    linkAge: Math.floor((new Date() - new Date(link.created_at)) / (1000 * 60 * 60 * 24))
                 }
 
-                res.json(info)
+                res.json(stats)
             } catch (error) {
-                console.error('❌ API info error:', error)
+                console.error('❌ API stats error:', error)
                 res.status(500).json({ error: 'Internal server error' })
             }
         })
+    }
+
+    // Parse device info with client hints support
+    parseDeviceInfo(req, userAgent) {
+        const deviceInfo = LinkService.parseUserAgent(userAgent)
+        
+        // Try to get additional info from client hints if available
+        const headers = req.headers
+        
+        if (headers['sec-ch-ua-platform']) {
+            const platform = headers['sec-ch-ua-platform'].replace(/"/g, '').toLowerCase()
+            if (platform === 'android') deviceInfo.os = 'android'
+            else if (platform === 'ios') deviceInfo.os = 'ios'
+            else if (platform === 'windows') deviceInfo.os = 'windows'
+            else if (platform === 'macos') deviceInfo.os = 'macos'
+        }
+        
+        if (headers['sec-ch-ua-mobile'] === '?1') {
+            deviceInfo.device = 'mobile'
+        }
+
+        // Try to get more specific device model from sec-ch-ua
+        if (headers['sec-ch-ua']) {
+            const ua = headers['sec-ch-ua'].toLowerCase()
+            
+            // Enhanced brand detection with client hints
+            if (ua.includes('samsung')) deviceInfo.brand = 'Samsung'
+            else if (ua.includes('google')) deviceInfo.brand = 'Google'
+            else if (ua.includes('huawei')) deviceInfo.brand = 'Huawei'
+            else if (ua.includes('xiaomi')) deviceInfo.brand = 'Xiaomi'
+            else if (ua.includes('oppo')) deviceInfo.brand = 'Oppo'
+            else if (ua.includes('vivo')) deviceInfo.brand = 'Vivo'
+        }
+        
+        return deviceInfo
+    }
+
+    // Parse cookies helper
+    parseCookies(cookieHeader) {
+        const cookies = {}
+        if (cookieHeader) {
+            cookieHeader.split(';').forEach(cookie => {
+                const [name, value] = cookie.trim().split('=')
+                if (name && value) {
+                    cookies[name] = decodeURIComponent(value)
+                }
+            })
+        }
+        return cookies
     }
 
     // Get real IP address from request
@@ -208,23 +250,6 @@ class DWeyWebServer {
                req.socket.remoteAddress ||
                (req.connection.socket ? req.connection.socket.remoteAddress : null) ||
                '127.0.0.1'
-    }
-
-    // Create verification message for WhatsApp
-    createVerificationMessage(report) {
-        const { verification, linkStats, authenticity } = report
-        
-        let message = `🔍 LINK VERIFICATION REQUEST\n\n`
-        message += `Code: ${verification.shortCode}\n`
-        message += `Verified: ${new Date(verification.verifiedAt).toLocaleString()}\n`
-        message += `Trust Score: ${authenticity.trustScore}/100\n\n`
-        message += `My Device: ${verification.verifierInfo.device} | ${verification.verifierInfo.browser}\n`
-        message += `Location: ${verification.verifierInfo.location}\n`
-        message += `ID: ${verification.verifierInfo.hashedId}\n\n`
-        message += `Link Stats: ${linkStats.totalClicks} clicks | ${linkStats.uniqueVisitors} unique\n\n`
-        message += `Please send me the verification report for this link.`
-        
-        return message
     }
 
     // Send 404 response for missing redirect links
@@ -286,6 +311,7 @@ class DWeyWebServer {
             console.log(`🌐 d-wey server running on ${host}:${port}`)
             console.log(`🔗 Redirect: ${process.env.SHORT_DOMAIN || `http://${host}:${port}`}/:shortcode`)
             console.log(`🔍 Verify: ${process.env.SHORT_DOMAIN || `http://${host}:${port}`}/wey/:shortcode`)
+            console.log(`📊 Stats API: ${process.env.SHORT_DOMAIN || `http://${host}:${port}`}/api/stats/:shortcode`)
             console.log(`🏥 Health: ${process.env.SHORT_DOMAIN || `http://${host}:${port}`}/health`)
         })
         
