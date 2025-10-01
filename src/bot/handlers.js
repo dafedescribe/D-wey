@@ -1,5 +1,5 @@
 const UserService = require('../services/userService')
-const PaymentService = require('../services/paymentService')
+const LinkService = require('../services/linkService')
 const CouponService = require('../services/couponService')
 
 function handleMessage(sock) {
@@ -19,12 +19,12 @@ function handleMessage(sock) {
         const phoneNumber = jid.split('@')[0].replace(/\D/g, '')
         const displayName = msg.pushName || 'Friend'
         
-        console.log(`📨 ${phoneNumber} (${displayName}): ${text}`)
+        console.log(`${phoneNumber} (${displayName}): ${text}`)
 
         try {
             const command = text.toLowerCase().trim()
 
-            // Rate limiting - simplified response
+            // Rate limiting
             const rateLimitCheck = UserService.checkRateLimit(phoneNumber, 'general')
             if (!rateLimitCheck.allowed) {
                 await sock.sendMessage(jid, { 
@@ -33,193 +33,318 @@ function handleMessage(sock) {
                 return
             }
 
-            // EMAIL DETECTION - Simplified flow
-            if (UserService.isValidEmail(text.trim())) {
-                const emailRateCheck = UserService.checkRateLimit(phoneNumber, 'email')
-                if (!emailRateCheck.allowed) {
-                    await sock.sendMessage(jid, { text: `⚠️ Wait ${emailRateCheck.resetIn}s then try again.` })
+            // BALANCE CHECK
+            if (command.match(/(balance|money|coins|tums|much.*have|check|wallet)/i)) {
+                await UserService.softRegisterUser(phoneNumber, displayName)
+                const user = await UserService.getUserByPhone(phoneNumber)
+                
+                const balance = user.wallet_balance || 0
+                await sock.sendMessage(jid, { 
+                    text: `💰 Balance: ${balance} tums\n\n🎫 Get more: coupon CODE` 
+                })
+                return
+            }
+
+            // CREATE LINK - createlink 2348012345678 hello|customcode
+            if (command.startsWith('createlink ')) {
+                const linkRateCheck = UserService.checkRateLimit(phoneNumber, 'createlink')
+                if (!linkRateCheck.allowed) {
+                    await sock.sendMessage(jid, { text: `⚠️ Wait ${linkRateCheck.resetIn}s` })
                     return
                 }
 
-                const email = text.trim().toLowerCase()
+                await UserService.softRegisterUser(phoneNumber, displayName)
                 
                 try {
-                    const isEmailTaken = await UserService.isEmailTaken(email)
-                    if (isEmailTaken) {
+                    const parts = text.split(' ')
+                    if (parts.length < 2) {
                         await sock.sendMessage(jid, { 
-                            text: '❌ Email already used. Try a different one.' 
+                            text: `📝 Create link:\n\ncreatelink 2348012345678\nor\ncreatelink 2348012345678 Hello!|mycode\n\nCost: ${LinkService.PRICING.CREATE_LINK} tums` 
                         })
                         return
                     }
 
-                    const result = await UserService.storeUserEmail(phoneNumber, displayName, email)
-                    
-                    if (result.isNew) {
-                        // NEW USER - Super simple welcome
-                        await sock.sendMessage(jid, { 
-                            text: `✅ Welcome ${displayName}!\n🎁 You got 1000 free coins!\n💳 Want more? Send: pay 500` 
-                        })
-                    } else {
-                        // RETURNING USER
-                        if (result.user.email) {
-                            await sock.sendMessage(jid, { 
-                                text: `❌ Can't change email.\nYour email: ${result.user.email}\nSend "balance" to check coins.` 
-                            })
+                    const targetPhone = parts[1]
+                    let customMessage = null
+                    let customCode = null
+
+                    // Parse message and code (format: message|code)
+                    if (parts.length > 2) {
+                        const extraParts = parts.slice(2).join(' ')
+                        if (extraParts.includes('|')) {
+                            const [msg, code] = extraParts.split('|')
+                            customMessage = msg.trim() || null
+                            customCode = code.trim() || null
                         } else {
-                            await sock.sendMessage(jid, { 
-                                text: `✅ Welcome back!\nBalance: ${result.user.wallet_balance || 0} coins\nSend "pay 500" to add more.` 
-                            })
+                            customMessage = extraParts.trim()
                         }
                     }
+
+                    const result = await LinkService.createWhatsAppLink(
+                        phoneNumber,
+                        targetPhone,
+                        customCode,
+                        customMessage
+                    )
+
+                    await sock.sendMessage(jid, { 
+                        text: `✅ Link created!\n\n🔗 ${result.redirectUrl}\n📱 Target: ${targetPhone}\n💰 Cost: ${result.cost} tums\n⏰ Expires: ${new Date(result.expiresAt).toLocaleString()}\n\n📊 Check stats: linkinfo ${result.shortCode}` 
+                    })
+
                 } catch (error) {
-                    await sock.sendMessage(jid, { text: '❌ Something broke. Try again.' })
+                    await sock.sendMessage(jid, { text: `❌ ${error.message}` })
                 }
                 return
             }
 
-            // NATURAL LANGUAGE PROCESSING - Accept variations
-            
-            // BALANCE CHECK - Multiple ways to ask
-            if (command.match(/(balance|money|coins|much.*have|check|wallet)/i)) {
-                const user = await UserService.getUserByPhone(phoneNumber)
-                
-                if (!user || !user.email) {
-                    await sock.sendMessage(jid, { 
-                        text: '📧 Send your email first!\nExample: john@gmail.com' 
-                    })
-                    return
-                }
-                
-                const balance = user.wallet_balance || 0
-                await sock.sendMessage(jid, { 
-                    text: `💰 ${balance} coins\n💳 Add more: pay 500` 
-                })
-                return
-            }
-
-            // PAYMENT INTENT - Multiple ways to express
-            if (command.match(/(pay|buy|add|money|top.*up|purchase)/i) && !command.startsWith('/')) {
-                const user = await UserService.getUserByPhone(phoneNumber)
-                
-                if (!user || !user.email) {
-                    await sock.sendMessage(jid, { 
-                        text: '📧 Send your email first to buy coins!' 
-                    })
+            // LINK INFO - linkinfo shortcode
+            if (command.startsWith('linkinfo ')) {
+                const parts = command.split(' ')
+                if (parts.length < 2) {
+                    await sock.sendMessage(jid, { text: `📊 Usage: linkinfo SHORTCODE` })
                     return
                 }
 
-                // Show simple payment options
-                await sock.sendMessage(jid, { 
-                    text: `💳 Buy coins with your card:\n\npay 500 → 2000 coins\npay 1000 → 4000 coins\npay 2000 → 8000 coins\n\nJust send "pay 500" to start!` 
-                })
-                return
-            }
-
-            // COUPON INTENT
-            if (command.match(/(coupon|promo|code|free|bonus)/i) && !command.startsWith('/')) {
-                const user = await UserService.getUserByPhone(phoneNumber)
+                await UserService.softRegisterUser(phoneNumber, displayName)
                 
-                if (!user || !user.email) {
-                    await sock.sendMessage(jid, { 
-                        text: '📧 Send your email first!' 
-                    })
-                    return
-                }
+                try {
+                    const shortCode = parts[1]
+                    const info = await LinkService.getLinkInfo(phoneNumber, shortCode)
 
-                await sock.sendMessage(jid, { 
-                    text: `🎫 Got a coupon? Send:\ncoupon YOUR_CODE\n\nExample:\ncoupon SAVE100` 
-                })
-                return
-            }
+                    const analytics = info.analytics
+                    const link = info.link
 
-            // HELP/MENU REQUEST
-            if (command.match(/(help|menu|commands|what|how|start|hi|hello)/i)) {
-                const existingUser = await UserService.getUserByPhone(phoneNumber)
-                
-                if (existingUser && existingUser.email) {
-                    await sock.sendMessage(jid, { 
-                        text: `👋 Hey ${displayName}!\n\nbalance → Check coins\npay 500 → Buy coins\ncoupon ABC → Free coins\n\nThat's it! 🎯` 
-                    })
-                } else {
-                    await sock.sendMessage(jid, { 
-                        text: `👋 Hi ${displayName}!\n\nSend your email to start:\njohn@gmail.com\n\n🎁 Get 1000 free coins!` 
-                    })
+                    let message = `📊 Link Info: ${link.shortCode}\n\n`
+                    message += `🔗 ${link.redirectUrl}\n`
+                    message += `📱 Target: ${link.targetPhone}\n`
+                    if (link.temporalTarget) {
+                        message += `⏰ Temporal: ${link.temporalTarget}\n`
+                    }
+                    message += `\n📈 Stats:\n`
+                    message += `Total clicks: ${link.totalClicks}\n`
+                    message += `Unique clicks: ${link.uniqueClicks}\n`
+                    message += `Peak time: ${analytics.peakTime}\n`
+                    message += `\n💰 Cost: ${LinkService.PRICING.LINK_INFO_CHECK} tums`
+
+                    await sock.sendMessage(jid, { text: message })
+
+                } catch (error) {
+                    await sock.sendMessage(jid, { text: `❌ ${error.message}` })
                 }
                 return
             }
 
-            // EXACT PAYMENT COMMAND - pay 500
-            if (command.startsWith('pay ')) {
-                const payRateCheck = UserService.checkRateLimit(phoneNumber, 'payment')
-                if (!payRateCheck.allowed) {
-                    await sock.sendMessage(jid, { 
-                        text: `💳 Wait ${payRateCheck.resetIn}s to prevent duplicate payments.` 
-                    })
-                    return
-                }
-
-                const user = await UserService.getUserByPhone(phoneNumber)
+            // SET TEMPORAL TARGET - settemporal shortcode 2348012345678
+            if (command.startsWith('settemporal ')) {
+                await UserService.softRegisterUser(phoneNumber, displayName)
                 
-                if (!user || !user.email) {
-                    await sock.sendMessage(jid, { 
-                        text: '📧 Send your email first!' 
-                    })
-                    return
-                }
+                try {
+                    const parts = command.split(' ')
+                    if (parts.length < 3) {
+                        await sock.sendMessage(jid, { 
+                            text: `⏰ Usage: settemporal SHORTCODE PHONE\n\nExample: settemporal abc123 2348012345678\n\nCost: ${LinkService.PRICING.SET_TEMPORAL_TARGET} tums` 
+                        })
+                        return
+                    }
 
+                    const shortCode = parts[1]
+                    const temporalPhone = parts[2]
+
+                    const result = await LinkService.setTemporalTarget(phoneNumber, shortCode, temporalPhone)
+
+                    await sock.sendMessage(jid, { 
+                        text: `✅ Temporal target set!\n\n🔗 Link: ${shortCode}\n⏰ Temporal: ${result.temporalTarget}\n\n💰 Cost: ${LinkService.PRICING.SET_TEMPORAL_TARGET} tums\n\nKill with: killtemporal ${shortCode}` 
+                    })
+
+                } catch (error) {
+                    await sock.sendMessage(jid, { text: `❌ ${error.message}` })
+                }
+                return
+            }
+
+            // KILL TEMPORAL TARGET - killtemporal shortcode
+            if (command.startsWith('killtemporal ')) {
+                await UserService.softRegisterUser(phoneNumber, displayName)
+                
                 try {
                     const parts = command.split(' ')
                     if (parts.length < 2) {
                         await sock.sendMessage(jid, { 
-                            text: `💳 How much?\n\nTry:\npay 500\npay 1000\npay 2000` 
+                            text: `Usage: killtemporal SHORTCODE\n\nCost: ${LinkService.PRICING.KILL_TEMPORAL_TARGET} tums` 
                         })
                         return
                     }
 
-                    const amountInKobo = PaymentService.parseAmount(parts[1])
-                    const amountInNaira = amountInKobo / 100
-                    const tumsToReceive = PaymentService.calculateCoins(amountInKobo)
-
-                    const validation = PaymentService.validateCardPayment(amountInKobo)
-                    if (!validation.isValid) {
-                        await sock.sendMessage(jid, { 
-                            text: `❌ ${validation.errors[0]}\nTry: pay 500` 
-                        })
-                        return
-                    }
-
-                    const payment = await PaymentService.createPaymentLink(
-                        user.email, 
-                        phoneNumber, 
-                        amountInKobo
-                    )
+                    const shortCode = parts[1]
+                    await LinkService.killTemporalTarget(phoneNumber, shortCode)
 
                     await sock.sendMessage(jid, { 
-                        text: `💳 Pay ₦${amountInNaira} to get ${tumsToReceive} coins:\n\n${payment.authorization_url}\n\n✅ Instant credit after payment` 
+                        text: `✅ Temporal target removed!\n\n🔗 Link: ${shortCode}\n💰 Cost: ${LinkService.PRICING.KILL_TEMPORAL_TARGET} tums` 
                     })
 
                 } catch (error) {
-                    await sock.sendMessage(jid, { 
-                        text: `❌ ${error.message}\nTry: pay 500` 
-                    })
+                    await sock.sendMessage(jid, { text: `❌ ${error.message}` })
                 }
                 return
             }
-            
-            // EXACT COUPON COMMAND - coupon ABC123
+
+            // MY LINKS - mylinks or mylinks active
+            if (command.match(/^mylinks/i)) {
+                await UserService.softRegisterUser(phoneNumber, displayName)
+                
+                try {
+                    const filter = command.includes('active') ? 'active' : 'all'
+                    const links = await LinkService.getUserLinks(phoneNumber, filter)
+
+                    if (!links || links.length === 0) {
+                        await sock.sendMessage(jid, { 
+                            text: `No links found.\n\nCreate one: createlink 2348012345678` 
+                        })
+                        return
+                    }
+
+                    let message = `📋 My Links (${links.length}):\n\n`
+                    links.slice(0, 10).forEach(link => {
+                        message += `🔗 ${link.short_code}\n`
+                        message += `   Clicks: ${link.total_clicks} (${link.unique_clicks} unique)\n`
+                        message += `   Status: ${link.is_active ? '✅ Active' : '❌ Inactive'}\n\n`
+                    })
+                    message += `\nCheck stats: linkinfo CODE\nSearch: searchlinks TARGET`
+
+                    await sock.sendMessage(jid, { text: message })
+
+                } catch (error) {
+                    await sock.sendMessage(jid, { text: `❌ ${error.message}` })
+                }
+                return
+            }
+
+            // SEARCH LINKS BY TARGET - searchlinks 2348012345678
+            if (command.startsWith('searchlinks ')) {
+                await UserService.softRegisterUser(phoneNumber, displayName)
+                
+                try {
+                    const parts = command.split(' ')
+                    if (parts.length < 2) {
+                        await sock.sendMessage(jid, { 
+                            text: `🔍 Usage: searchlinks PHONE\n\nExample: searchlinks 2348012345678` 
+                        })
+                        return
+                    }
+
+                    const targetPhone = parts[1]
+                    const links = await LinkService.getLinksByTarget(phoneNumber, targetPhone)
+
+                    if (!links || links.length === 0) {
+                        await sock.sendMessage(jid, { text: `No links found for that number.` })
+                        return
+                    }
+
+                    let message = `🔍 Links to ${targetPhone}:\n\n`
+                    links.slice(0, 10).forEach(link => {
+                        message += `🔗 ${link.short_code} - ${link.total_clicks} clicks\n`
+                    })
+
+                    await sock.sendMessage(jid, { text: message })
+
+                } catch (error) {
+                    await sock.sendMessage(jid, { text: `❌ ${error.message}` })
+                }
+                return
+            }
+
+            // BEST PERFORMING LINKS
+            if (command.match(/^(best|top)/i)) {
+                await UserService.softRegisterUser(phoneNumber, displayName)
+                
+                try {
+                    const links = await LinkService.getBestPerformingLinks(phoneNumber)
+
+                    if (!links || links.length === 0) {
+                        await sock.sendMessage(jid, { text: `No active links yet.` })
+                        return
+                    }
+
+                    let message = `🏆 Best Performing Links:\n\n`
+                    links.forEach((link, index) => {
+                        message += `${index + 1}. ${link.short_code}\n`
+                        message += `   ${link.total_clicks} clicks (${link.unique_clicks} unique)\n\n`
+                    })
+
+                    await sock.sendMessage(jid, { text: message })
+
+                } catch (error) {
+                    await sock.sendMessage(jid, { text: `❌ ${error.message}` })
+                }
+                return
+            }
+
+            // LOWEST PERFORMING LINKS
+            if (command.match(/^(worst|lowest|bottom)/i)) {
+                await UserService.softRegisterUser(phoneNumber, displayName)
+                
+                try {
+                    const links = await LinkService.getLowestPerformingLinks(phoneNumber)
+
+                    if (!links || links.length === 0) {
+                        await sock.sendMessage(jid, { text: `No active links yet.` })
+                        return
+                    }
+
+                    let message = `📉 Lowest Performing Links:\n\n`
+                    links.forEach((link, index) => {
+                        message += `${index + 1}. ${link.short_code}\n`
+                        message += `   ${link.total_clicks} clicks (${link.unique_clicks} unique)\n\n`
+                    })
+
+                    await sock.sendMessage(jid, { text: message })
+
+                } catch (error) {
+                    await sock.sendMessage(jid, { text: `❌ ${error.message}` })
+                }
+                return
+            }
+
+            // KILL LINK - killlink shortcode
+            if (command.startsWith('killlink ')) {
+                await UserService.softRegisterUser(phoneNumber, displayName)
+                
+                try {
+                    const parts = command.split(' ')
+                    if (parts.length < 2) {
+                        await sock.sendMessage(jid, { text: `Usage: killlink SHORTCODE` })
+                        return
+                    }
+
+                    const shortCode = parts[1]
+                    await LinkService.killLink(phoneNumber, shortCode)
+
+                    await sock.sendMessage(jid, { 
+                        text: `✅ Link killed: ${shortCode}\n\nThe link is now permanently inactive.` 
+                    })
+
+                } catch (error) {
+                    await sock.sendMessage(jid, { text: `❌ ${error.message}` })
+                }
+                return
+            }
+
+            // COUPON - coupon CODE
             if (command.startsWith('coupon ')) {
                 const couponRateCheck = UserService.checkRateLimit(phoneNumber, 'coupon')
                 if (!couponRateCheck.allowed) {
                     await sock.sendMessage(jid, { 
-                        text: `🎫 Wait ${couponRateCheck.resetIn}s before trying another coupon.` 
+                        text: `🎫 Wait ${couponRateCheck.resetIn}s` 
                     })
                     return
                 }
 
+                await UserService.softRegisterUser(phoneNumber, displayName)
+
                 const parts = command.split(' ')
                 if (parts.length < 2) {
                     await sock.sendMessage(jid, { 
-                        text: `🎫 What's the code?\n\nTry:\ncoupon SAVE100` 
+                        text: `🎫 Usage: coupon CODE\n\nExample: coupon SAVE100` 
                     })
                     return
                 }
@@ -230,31 +355,46 @@ function handleMessage(sock) {
                     const result = await CouponService.redeemCoupon(phoneNumber, couponCode)
                     
                     await sock.sendMessage(jid, { 
-                        text: `🎉 Coupon worked!\n\n+${result.coupon.amount} coins\nNew balance: ${result.newBalance} coins` 
+                        text: `🎉 Coupon redeemed!\n\n+${result.coupon.amount} tums\nNew balance: ${result.newBalance} tums` 
                     })
 
                 } catch (error) {
-                    await sock.sendMessage(jid, { 
-                        text: `❌ ${error.message}` 
-                    })
+                    await sock.sendMessage(jid, { text: `❌ ${error.message}` })
                 }
                 return
             }
-            
-            // FALLBACK - Don't understand
-            const user = await UserService.getUserByPhone(phoneNumber)
-            if (!user || !user.email) {
+
+            // HELP/MENU
+            if (command.match(/(help|menu|commands|start|hi|hello)/i)) {
+                await UserService.softRegisterUser(phoneNumber, displayName)
+                
                 await sock.sendMessage(jid, { 
-                    text: `📧 Send your email to get started!\nExample: john@gmail.com` 
+                    text: `👋 Hey ${displayName}!\n\n📱 LINK COMMANDS:\n` +
+                          `createlink PHONE - Create link (${LinkService.PRICING.CREATE_LINK} tums)\n` +
+                          `linkinfo CODE - Check stats (${LinkService.PRICING.LINK_INFO_CHECK} tums)\n` +
+                          `mylinks - View all links\n` +
+                          `searchlinks PHONE - Find links\n` +
+                          `best - Top performers\n` +
+                          `worst - Low performers\n` +
+                          `killlink CODE - Delete link\n\n` +
+                          `⏰ TEMPORAL:\n` +
+                          `settemporal CODE PHONE (${LinkService.PRICING.SET_TEMPORAL_TARGET} tums)\n` +
+                          `killtemporal CODE (${LinkService.PRICING.KILL_TEMPORAL_TARGET} tums)\n\n` +
+                          `💰 OTHER:\n` +
+                          `balance - Check tums\n` +
+                          `coupon CODE - Redeem coupon` 
                 })
-            } else {
-                await sock.sendMessage(jid, { 
-                    text: `🤔 Try:\n\nbalance\npay 500\ncoupon ABC\n\nOr just ask: "how much money do I have?"` 
-                })
+                return
             }
+
+            // FALLBACK
+            await UserService.softRegisterUser(phoneNumber, displayName)
+            await sock.sendMessage(jid, { 
+                text: `🤔 Try:\n\nhelp - See commands\nbalance - Check tums\ncreatelink PHONE - Make link` 
+            })
             
         } catch (error) {
-            console.error('❌ Error:', error)
+            console.error('Error:', error)
             await sock.sendMessage(jid, { 
                 text: '❌ Something broke. Try again in 1 minute.' 
             })
