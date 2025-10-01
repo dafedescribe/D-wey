@@ -1,6 +1,6 @@
 require('dotenv').config()
 const { connectToWhatsApp } = require('./bot/connection')
-const DWeyWebServer = require('./server/DWeywebServer')
+const DWeyWebServer = require('./server/DWeyWebServer')
 const LinkService = require('./services/linkService')
 
 async function startApplication() {
