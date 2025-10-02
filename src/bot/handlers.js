@@ -97,7 +97,7 @@ function handleMessage(sock) {
                 return
             }
 
-            // LINK INFO - linkinfo shortcode
+            // LINK INFO - linkinfo shortcode (ENHANCED WITH FULL ANALYTICS)
             if (command.startsWith('linkinfo ')) {
                 const parts = command.split(' ')
                 if (parts.length < 2) {
@@ -114,16 +114,86 @@ function handleMessage(sock) {
                     const analytics = info.analytics
                     const link = info.link
 
-                    let message = `📊 Link Info: ${link.shortCode}\n\n`
+                    let message = `📊 Link Analytics: ${link.shortCode}\n\n`
                     message += `🔗 ${link.redirectUrl}\n`
                     message += `📱 Target: ${link.targetPhone}\n`
                     if (link.temporalTarget) {
                         message += `⏰ Temporal: ${link.temporalTarget}\n`
                     }
-                    message += `\n📈 Stats:\n`
+                    message += `\n━━━━━━━━━━━━━━━━\n`
+                    message += `📈 PERFORMANCE\n`
+                    message += `━━━━━━━━━━━━━━━━\n`
                     message += `Total clicks: ${link.totalClicks}\n`
                     message += `Unique clicks: ${link.uniqueClicks}\n`
-                    message += `Peak time: ${analytics.peakTime}\n`
+                    message += `Unique rate: ${analytics.uniqueClickRate}\n`
+                    message += `Avg/day: ${analytics.averageClicksPerDay}\n`
+                    
+                    if (analytics.totalClicks > 0) {
+                        message += `\n━━━━━━━━━━━━━━━━\n`
+                        message += `⏰ TIME PATTERNS\n`
+                        message += `━━━━━━━━━━━━━━━━\n`
+                        message += `Peak hour: ${analytics.peakTime}\n`
+                        message += `Peak day: ${analytics.peakDay} (${analytics.peakDayClicks} clicks)\n`
+                        message += `Peak weekday: ${analytics.peakDayOfWeek} (${analytics.peakDayOfWeekClicks} clicks)\n`
+                        
+                        message += `\n━━━━━━━━━━━━━━━━\n`
+                        message += `📅 ACTIVITY\n`
+                        message += `━━━━━━━━━━━━━━━━\n`
+                        message += `Active days: ${analytics.totalDays}\n`
+                        message += `Active hours: ${analytics.activeHours}/24\n`
+                        message += `Active weekdays: ${analytics.activeDaysOfWeek}/7\n`
+                        
+                        message += `\n━━━━━━━━━━━━━━━━\n`
+                        message += `📊 DAY OF WEEK\n`
+                        message += `━━━━━━━━━━━━━━━━\n`
+                        Object.entries(analytics.clicksByDayOfWeek).forEach(([day, count]) => {
+                            if (count > 0) {
+                                const bar = '█'.repeat(Math.ceil(count / analytics.peakDayOfWeekClicks * 10))
+                                message += `${day.substring(0,3)}: ${bar} ${count}\n`
+                            }
+                        })
+                        
+                        message += `\n━━━━━━━━━━━━━━━━\n`
+                        message += `🕐 HOURLY PATTERN\n`
+                        message += `━━━━━━━━━━━━━━━━\n`
+                        
+                        // Group hours into time periods
+                        const periods = {
+                            'Night (12am-6am)': [0,1,2,3,4,5],
+                            'Morning (6am-12pm)': [6,7,8,9,10,11],
+                            'Afternoon (12pm-6pm)': [12,13,14,15,16,17],
+                            'Evening (6pm-12am)': [18,19,20,21,22,23]
+                        }
+                        
+                        Object.entries(periods).forEach(([period, hours]) => {
+                            const periodClicks = hours.reduce((sum, hour) => sum + (analytics.clicksByHour[hour] || 0), 0)
+                            if (periodClicks > 0) {
+                                const percentage = ((periodClicks / analytics.totalClicks) * 100).toFixed(0)
+                                message += `${period}: ${periodClicks} (${percentage}%)\n`
+                            }
+                        })
+                        
+                        message += `\n━━━━━━━━━━━━━━━━\n`
+                        message += `📅 TIMELINE\n`
+                        message += `━━━━━━━━━━━━━━━━\n`
+                        const firstClick = new Date(analytics.firstClick).toLocaleString('en-GB', {
+                            timeZone: 'Africa/Lagos',
+                            day: '2-digit',
+                            month: 'short',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                        })
+                        const lastClick = new Date(analytics.lastClick).toLocaleString('en-GB', {
+                            timeZone: 'Africa/Lagos',
+                            day: '2-digit',
+                            month: 'short',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                        })
+                        message += `First: ${firstClick}\n`
+                        message += `Last: ${lastClick}\n`
+                    }
+                    
                     message += `\n💰 Cost: ${LinkService.PRICING.LINK_INFO_CHECK} tums`
 
                     await sock.sendMessage(jid, { text: message })

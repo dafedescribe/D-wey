@@ -152,7 +152,7 @@ class LinkService {
         const maxAttempts = 10
 
         while (attempts < maxAttempts) {
-            const shortCode = this.generateShortCode()
+            const shortCode = this.generateShortCode().toLowerCase()
             
             const { data: existing, error } = await supabase
                 .from('whatsapp_links')
@@ -177,15 +177,18 @@ class LinkService {
 
     // Handle custom short code with variations
     static async generateCustomShortCode(requested) {
-        const baseCode = requested.replace(/[^a-zA-Z0-9]/g, '').toLowerCase()
+        const cleanCode = requested.replace(/[^a-zA-Z0-9]/g, '')
         
-        if (baseCode.length < 3) {
+        if (cleanCode.length < 3) {
             throw new Error('Custom short code must be at least 3 characters')
         }
 
-        if (baseCode.length > 20) {
+        if (cleanCode.length > 20) {
             throw new Error('Custom short code must be less than 20 characters')
         }
+
+        // Convert to lowercase for storage and checking
+        const baseCode = cleanCode.toLowerCase()
 
         // Try original first
         const { data: existing, error } = await supabase
@@ -227,10 +230,12 @@ class LinkService {
     // Get link by short code
     static async getLinkByShortCode(shortCode) {
         try {
+            const normalizedCode = shortCode.toLowerCase()
+            
             const { data, error } = await supabase
                 .from('whatsapp_links')
                 .select('*')
-                .eq('short_code', shortCode)
+                .eq('short_code', normalizedCode)
                 .eq('is_active', true)
                 .maybeSingle()
 
@@ -245,7 +250,7 @@ class LinkService {
 
             // Check if link is expired
             if (new Date(data.expires_at) < new Date()) {
-                await this.deactivateLink(shortCode, 'expired')
+                await this.deactivateLink(normalizedCode, 'expired')
                 return null
             }
 
@@ -334,8 +339,10 @@ class LinkService {
     // Set temporal target number
     static async setTemporalTarget(phoneNumber, shortCode, temporalTargetPhone) {
         try {
+            const normalizedCode = shortCode.toLowerCase()
+            
             // Verify ownership
-            const link = await this.verifyLinkOwnership(phoneNumber, shortCode)
+            const link = await this.verifyLinkOwnership(phoneNumber, normalizedCode)
             
             // Check if temporal target already exists
             if (link.temporal_target_phone) {
@@ -367,7 +374,7 @@ class LinkService {
                     temporal_set_at: new Date().toISOString(),
                     updated_at: new Date().toISOString()
                 })
-                .eq('short_code', shortCode)
+                .eq('short_code', normalizedCode)
                 .eq('creator_phone', phoneNumber)
 
             if (error) throw error
@@ -376,10 +383,10 @@ class LinkService {
             await UserService.deductFromWallet(
                 phoneNumber,
                 this.PRICING.SET_TEMPORAL_TARGET,
-                `Temporal target set for ${shortCode}`
+                `Temporal target set for ${normalizedCode}`
             )
 
-            console.log(`Temporal target set: ${shortCode} -> ${formattedTemporalPhone}`)
+            console.log(`Temporal target set: ${normalizedCode} -> ${formattedTemporalPhone}`)
             return { success: true, temporalTarget: formattedTemporalPhone }
 
         } catch (error) {
@@ -391,8 +398,10 @@ class LinkService {
     // Kill temporal target number
     static async killTemporalTarget(phoneNumber, shortCode) {
         try {
+            const normalizedCode = shortCode.toLowerCase()
+            
             // Verify ownership
-            const link = await this.verifyLinkOwnership(phoneNumber, shortCode)
+            const link = await this.verifyLinkOwnership(phoneNumber, normalizedCode)
             
             if (!link.temporal_target_phone) {
                 throw new Error('No temporal target set for this link')
@@ -413,7 +422,7 @@ class LinkService {
                     temporal_set_at: null,
                     updated_at: new Date().toISOString()
                 })
-                .eq('short_code', shortCode)
+                .eq('short_code', normalizedCode)
                 .eq('creator_phone', phoneNumber)
 
             if (error) throw error
@@ -422,10 +431,10 @@ class LinkService {
             await UserService.deductFromWallet(
                 phoneNumber,
                 this.PRICING.KILL_TEMPORAL_TARGET,
-                `Temporal target killed for ${shortCode}`
+                `Temporal target killed for ${normalizedCode}`
             )
 
-            console.log(`Temporal target killed: ${shortCode}`)
+            console.log(`Temporal target killed: ${normalizedCode}`)
             return { success: true }
 
         } catch (error) {
@@ -437,11 +446,13 @@ class LinkService {
     // Get link info with analytics (costs 10 tums)
     static async getLinkInfo(phoneNumber, shortCode) {
         try {
+            const normalizedCode = shortCode.toLowerCase()
+            
             // Get link
             const { data: link, error: linkError } = await supabase
                 .from('whatsapp_links')
                 .select('*')
-                .eq('short_code', shortCode)
+                .eq('short_code', normalizedCode)
                 .single()
 
             if (linkError || !link) {
@@ -466,10 +477,10 @@ class LinkService {
             await UserService.deductFromWallet(
                 phoneNumber,
                 this.PRICING.LINK_INFO_CHECK,
-                `Link info check - ${shortCode}`
+                `Link info check - ${normalizedCode}`
             )
 
-            // Get click analytics
+            // Get enhanced click analytics
             const analytics = await this.getLinkAnalytics(link.id)
 
             return {
@@ -493,12 +504,12 @@ class LinkService {
         }
     }
 
-    // Get link analytics
+    // Get comprehensive link analytics
     static async getLinkAnalytics(linkId) {
         try {
             const { data: clicks, error } = await supabase
                 .from('link_clicks')
-                .select('clicked_at')
+                .select('clicked_at, is_unique')
                 .eq('link_id', linkId)
                 .order('clicked_at', { ascending: true })
 
@@ -507,34 +518,132 @@ class LinkService {
             if (!clicks || clicks.length === 0) {
                 return {
                     peakTime: 'No data yet',
+                    peakDay: 'No data yet',
+                    peakDayOfWeek: 'No data yet',
                     clicksByHour: {},
+                    clicksByDay: {},
+                    clicksByDayOfWeek: {},
+                    uniqueClickRate: 0,
+                    totalClicks: 0,
+                    uniqueClicks: 0,
                     firstClick: null,
-                    lastClick: null
+                    lastClick: null,
+                    averageClicksPerDay: 0
                 }
             }
 
-            // Calculate clicks by hour
+            // Initialize counters
             const clicksByHour = {}
+            const clicksByDay = {}
+            const clicksByDayOfWeek = {
+                'Sunday': 0,
+                'Monday': 0,
+                'Tuesday': 0,
+                'Wednesday': 0,
+                'Thursday': 0,
+                'Friday': 0,
+                'Saturday': 0
+            }
+            
+            let uniqueClicks = 0
+
+            // Process all clicks
             clicks.forEach(click => {
-                const hour = new Date(click.clicked_at).getHours()
+                const date = new Date(click.clicked_at)
+                
+                // Hour analysis (0-23)
+                const hour = date.getHours()
                 clicksByHour[hour] = (clicksByHour[hour] || 0) + 1
+                
+                // Day analysis (YYYY-MM-DD)
+                const dayKey = date.toISOString().split('T')[0]
+                clicksByDay[dayKey] = (clicksByDay[dayKey] || 0) + 1
+                
+                // Day of week analysis
+                const dayOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][date.getDay()]
+                clicksByDayOfWeek[dayOfWeek]++
+                
+                // Count unique clicks
+                if (click.is_unique) {
+                    uniqueClicks++
+                }
             })
 
             // Find peak hour
             let peakHour = 0
-            let maxClicks = 0
+            let maxHourClicks = 0
             Object.entries(clicksByHour).forEach(([hour, count]) => {
-                if (count > maxClicks) {
-                    maxClicks = count
+                if (count > maxHourClicks) {
+                    maxHourClicks = count
                     peakHour = parseInt(hour)
                 }
             })
 
+            // Find peak day (specific date)
+            let peakDay = null
+            let maxDayClicks = 0
+            Object.entries(clicksByDay).forEach(([day, count]) => {
+                if (count > maxDayClicks) {
+                    maxDayClicks = count
+                    peakDay = day
+                }
+            })
+
+            // Find peak day of week
+            let peakDayOfWeek = null
+            let maxDayOfWeekClicks = 0
+            Object.entries(clicksByDayOfWeek).forEach(([day, count]) => {
+                if (count > maxDayOfWeekClicks) {
+                    maxDayOfWeekClicks = count
+                    peakDayOfWeek = day
+                }
+            })
+
+            // Calculate average clicks per day
+            const dayCount = Object.keys(clicksByDay).length
+            const averageClicksPerDay = dayCount > 0 ? (clicks.length / dayCount).toFixed(1) : 0
+
+            // Calculate unique click rate
+            const uniqueClickRate = clicks.length > 0 ? ((uniqueClicks / clicks.length) * 100).toFixed(1) : 0
+
+            // Format peak day nicely
+            const formattedPeakDay = peakDay ? new Date(peakDay).toLocaleDateString('en-GB', {
+                day: '2-digit',
+                month: 'short',
+                year: 'numeric'
+            }) : 'No data yet'
+
             return {
+                // Time of day analytics
                 peakTime: `${peakHour}:00 - ${peakHour + 1}:00`,
-                clicksByHour,
+                peakHour: peakHour,
+                clicksByHour: clicksByHour,
+                
+                // Day analytics
+                peakDay: formattedPeakDay,
+                peakDayRaw: peakDay,
+                peakDayClicks: maxDayClicks,
+                clicksByDay: clicksByDay,
+                
+                // Day of week analytics
+                peakDayOfWeek: peakDayOfWeek,
+                peakDayOfWeekClicks: maxDayOfWeekClicks,
+                clicksByDayOfWeek: clicksByDayOfWeek,
+                
+                // General stats
+                totalClicks: clicks.length,
+                uniqueClicks: uniqueClicks,
+                uniqueClickRate: `${uniqueClickRate}%`,
+                averageClicksPerDay: parseFloat(averageClicksPerDay),
+                
+                // Timeline
                 firstClick: clicks[0].clicked_at,
-                lastClick: clicks[clicks.length - 1].clicked_at
+                lastClick: clicks[clicks.length - 1].clicked_at,
+                
+                // Activity summary
+                totalDays: dayCount,
+                activeHours: Object.keys(clicksByHour).length,
+                activeDaysOfWeek: Object.values(clicksByDayOfWeek).filter(count => count > 0).length
             }
 
         } catch (error) {
@@ -545,10 +654,12 @@ class LinkService {
 
     // Verify link ownership
     static async verifyLinkOwnership(phoneNumber, shortCode) {
+        const normalizedCode = shortCode.toLowerCase()
+        
         const { data: link, error } = await supabase
             .from('whatsapp_links')
             .select('*')
-            .eq('short_code', shortCode)
+            .eq('short_code', normalizedCode)
             .eq('creator_phone', phoneNumber)
             .maybeSingle()
 
@@ -647,6 +758,8 @@ class LinkService {
     // Deactivate link
     static async deactivateLink(shortCode, reason = 'manual') {
         try {
+            const normalizedCode = shortCode.toLowerCase()
+            
             const { error } = await supabase
                 .from('whatsapp_links')
                 .update({ 
@@ -655,7 +768,7 @@ class LinkService {
                     deactivation_reason: reason,
                     updated_at: new Date().toISOString()
                 })
-                .eq('short_code', shortCode)
+                .eq('short_code', normalizedCode)
 
             if (error) throw error
 
@@ -670,8 +783,9 @@ class LinkService {
     // Kill/delete link permanently
     static async killLink(phoneNumber, shortCode) {
         try {
-            await this.verifyLinkOwnership(phoneNumber, shortCode)
-            await this.deactivateLink(shortCode, 'killed_by_owner')
+            const normalizedCode = shortCode.toLowerCase()
+            await this.verifyLinkOwnership(phoneNumber, normalizedCode)
+            await this.deactivateLink(normalizedCode, 'killed_by_owner')
             
             console.log(`Link killed: ${shortCode}`)
             return { success: true, message: `Link ${shortCode} has been permanently killed` }

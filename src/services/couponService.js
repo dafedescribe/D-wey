@@ -2,18 +2,20 @@ const { supabase } = require('../config/database')
 const UserService = require('./userService')
 
 class CouponService {
-    // Redeem coupon code
+    // Redeem coupon code - NO EMAIL REQUIRED
     static async redeemCoupon(phoneNumber, couponCode) {
         try {
             // Validate coupon format (basic validation)
             if (!couponCode || couponCode.length < 3) {
-                throw new Error('Invalid coupon code format')
+                throw new Error('Invalid coupon code')
             }
 
-            // Check if user exists
+            // Soft register user if not exists (no email needed)
+            await UserService.softRegisterUser(phoneNumber)
+            
             const user = await UserService.getUserByPhone(phoneNumber)
-            if (!user || !user.email) {
-                throw new Error('Please register your email first before redeeming coupons')
+            if (!user) {
+                throw new Error('User registration failed')
             }
 
             // Get coupon from database
@@ -25,29 +27,29 @@ class CouponService {
 
             if (couponError) {
                 if (couponError.code === 'PGRST116') {
-                    throw new Error('❌ Invalid coupon code')
+                    throw new Error('Invalid coupon code. Check my status for valid coupons!')
                 }
                 throw couponError
             }
 
             // Check if coupon is valid
             if (!coupon.is_valid) {
-                throw new Error('❌ This coupon has been disabled')
+                throw new Error('This coupon has been disabled')
             }
 
             // Check if coupon is expired
             if (coupon.expires_at && new Date(coupon.expires_at) < new Date()) {
-                throw new Error('❌ This coupon has expired')
+                throw new Error('This coupon has expired')
             }
 
             // Check if user has already used this coupon
             if (coupon.used_by && coupon.used_by.includes(phoneNumber)) {
-                throw new Error('❌ You have already used this coupon')
+                throw new Error('You already used this coupon. Check my status for new ones!')
             }
 
             // Check usage limit
             if (coupon.max_uses && coupon.used_by && coupon.used_by.length >= coupon.max_uses) {
-                throw new Error('❌ This coupon has reached its usage limit')
+                throw new Error('This coupon has reached its limit. Check my status for new ones!')
             }
 
             // Mark coupon as used by this user
@@ -72,7 +74,7 @@ class CouponService {
                 payment_method: 'coupon',
                 tums_amount: coupon.amount,
                 naira_amount: 0,
-                description: `Coupon redeemed: ${couponCode.toUpperCase()}`,
+                description: `Coupon: ${couponCode.toUpperCase()}`,
                 status: 'completed',
                 reference: `coupon_${couponCode.toUpperCase()}_${Date.now()}`,
                 created_at: new Date().toISOString(),
