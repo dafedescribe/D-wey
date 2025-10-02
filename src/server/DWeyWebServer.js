@@ -60,18 +60,27 @@ class DWeyWebServer {
                     return this.sendNotFoundResponse(res, shortCode)
                 }
 
-                // Get IP and create cookie hash
+                // Get IP
                 const clientIP = this.getRealIP(req)
                 const hashedIP = LinkService.hashIP(clientIP)
                 
-                // Create browser fingerprint from User-Agent + IP (for cookie hash)
-                const userAgent = req.get('user-agent') || 'unknown'
-                const browserFingerprint = `${userAgent}_${clientIP}`
-                const hashedCookie = LinkService.hashCookie(browserFingerprint)
+                // Check if browser already has a d-wey cookie
+                let browserCookie = req.cookies.d_wey_id
+                
+                // If no cookie exists, generate a new unique identifier
+                if (!browserCookie) {
+                    browserCookie = this.generateBrowserId()
+                    console.log(`New browser detected, assigning cookie: ${browserCookie}`)
+                } else {
+                    console.log(`Existing browser detected: ${browserCookie}`)
+                }
 
-                console.log(`Processing click from IP: ${clientIP}`)
+                // Hash the cookie for storage (privacy)
+                const hashedCookie = LinkService.hashCookie(browserCookie)
 
-                // Track the click
+                console.log(`Processing click from IP: ${clientIP}, Cookie: ${browserCookie.substring(0, 12)}...`)
+
+                // Track the click with Nigeria timezone
                 try {
                     await LinkService.trackClick(link.id, hashedIP, hashedCookie)
                     console.log('Click tracked successfully')
@@ -84,11 +93,12 @@ class DWeyWebServer {
                 
                 console.log(`Redirecting to: ${targetUrl}`)
                 
-                // Set cookie for browser identification
-                res.cookie('d_wey_id', hashedCookie, {
+                // Set/update cookie for browser identification (1 year expiry)
+                res.cookie('d_wey_id', browserCookie, {
                     maxAge: 365 * 24 * 60 * 60 * 1000, // 1 year
                     httpOnly: true,
-                    secure: process.env.NODE_ENV === 'production'
+                    secure: process.env.NODE_ENV === 'production',
+                    sameSite: 'lax'
                 })
 
                 res.writeHead(302, {
@@ -132,6 +142,14 @@ class DWeyWebServer {
                 res.status(500).json({ error: 'Internal server error' })
             }
         })
+    }
+
+    // Generate unique browser ID
+    generateBrowserId() {
+        // Generate a random UUID-like identifier for the browser
+        const timestamp = Date.now().toString(36)
+        const randomStr = crypto.randomBytes(16).toString('hex')
+        return `dwey_${timestamp}_${randomStr}`
     }
 
     getRealIP(req) {
