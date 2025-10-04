@@ -380,4 +380,4 @@ class IntentMatcher {
     }
 }
 
-module.exports = IntentMatcherIntentMatcher
+module.exports = IntentMatcher
