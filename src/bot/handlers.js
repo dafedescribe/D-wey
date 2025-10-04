@@ -87,8 +87,18 @@ function handleMessage(sock) {
                         customMessage
                     )
 
+                    // Format expiry time in Nigeria timezone
+                    const expiryTime = new Date(result.expiresAt).toLocaleString('en-GB', {
+                        timeZone: 'Africa/Lagos',
+                        day: '2-digit',
+                        month: 'short',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    })
+
                     await sock.sendMessage(jid, { 
-                        text: `✅ Link created!\n\n🔗 ${result.redirectUrl}\n📱 Target: ${targetPhone}\n💰 Cost: ${result.cost} tums\n⏰ Expires: ${new Date(result.expiresAt).toLocaleString()}\n\n📊 Check stats: linkinfo ${result.shortCode}` 
+                        text: `✅ Link created!\n\n🔗 ${result.redirectUrl}\n📱 Target: ${targetPhone}\n💰 Cost: ${result.cost} tums\n⏰ Expires: ${expiryTime}\n\n📊 Check stats: linkinfo ${result.shortCode}` 
                     })
 
                 } catch (error) {

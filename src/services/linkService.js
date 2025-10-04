@@ -11,13 +11,9 @@ class LinkService {
         KILL_TEMPORAL_TARGET: 10
     }
 
-    // Convert UTC date to Nigeria time (WAT - UTC+1)
-    static toNigeriaTime(date = new Date()) {
-        // Nigeria is UTC+1 (West Africa Time)
-        const utcDate = new Date(date)
-        const nigeriaOffset = 60 // minutes
-        const nigeriaTime = new Date(utcDate.getTime() + nigeriaOffset * 60 * 1000)
-        return nigeriaTime.toISOString()
+    // FIXED: Store timestamps in UTC (standard practice)
+    static getCurrentTimestamp() {
+        return new Date().toISOString()
     }
 
     // Format date for Nigeria timezone display
@@ -31,6 +27,33 @@ class LinkService {
             minute: '2-digit',
             second: '2-digit',
             hour12: false
+        })
+    }
+
+    // Get Nigeria hour (0-23) from a UTC timestamp
+    static getNigeriaHour(dateString) {
+        const date = new Date(dateString)
+        return parseInt(date.toLocaleString('en-US', { 
+            timeZone: 'Africa/Lagos', 
+            hour: '2-digit', 
+            hour12: false 
+        }))
+    }
+
+    // Get Nigeria day of week from a UTC timestamp
+    static getNigeriaDayOfWeek(dateString) {
+        const date = new Date(dateString)
+        return date.toLocaleDateString('en-US', { 
+            timeZone: 'Africa/Lagos', 
+            weekday: 'long' 
+        })
+    }
+
+    // Get Nigeria date string (YYYY-MM-DD) from a UTC timestamp
+    static getNigeriaDateString(dateString) {
+        const date = new Date(dateString)
+        return date.toLocaleDateString('en-CA', { 
+            timeZone: 'Africa/Lagos' 
         })
     }
 
@@ -117,8 +140,8 @@ class LinkService {
             // Calculate expiration (24 hours from now)
             const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
 
-            // Create link record with Nigeria time
-            const nigeriaTime = this.toNigeriaTime()
+            // Create link record with UTC timestamps
+            const now = this.getCurrentTimestamp()
             const linkData = {
                 creator_phone: creatorPhone,
                 target_phone: formattedTargetPhone,
@@ -130,10 +153,10 @@ class LinkService {
                 total_clicks: 0,
                 unique_clicks: 0,
                 is_active: true,
-                expires_at: this.toNigeriaTime(expiresAt),
-                next_billing_at: this.toNigeriaTime(expiresAt),
-                created_at: nigeriaTime,
-                updated_at: nigeriaTime
+                expires_at: expiresAt.toISOString(),
+                next_billing_at: expiresAt.toISOString(),
+                created_at: now,
+                updated_at: now
             }
 
             const { data: newLink, error } = await supabase
@@ -286,7 +309,7 @@ class LinkService {
         }
     }
 
-    // Track click on redirect link with Nigeria time
+    // FIXED: Track click with UTC timestamp
     static async trackClick(linkId, hashedIP, hashedCookie) {
         try {
             console.log(`Tracking click for link: ${linkId}`)
@@ -304,13 +327,13 @@ class LinkService {
 
             const isUnique = !existingClicks || existingClicks.length === 0
 
-            // Create click record with Nigeria time
+            // Store in UTC
             const clickData = {
                 link_id: linkId,
                 hashed_ip: hashedIP,
                 hashed_cookie: hashedCookie,
                 is_unique: isUnique,
-                clicked_at: this.toNigeriaTime()
+                clicked_at: this.getCurrentTimestamp()
             }
 
             const { error: clickError } = await supabase
@@ -333,7 +356,7 @@ class LinkService {
                 throw getCurrentError
             }
 
-            // Update link statistics with Nigeria time
+            // Update link statistics
             const newTotalClicks = (currentLink.total_clicks || 0) + 1
             const newUniqueClicks = (currentLink.unique_clicks || 0) + (isUnique ? 1 : 0)
 
@@ -342,8 +365,8 @@ class LinkService {
                 .update({ 
                     total_clicks: newTotalClicks,
                     unique_clicks: newUniqueClicks,
-                    last_clicked_at: this.toNigeriaTime(),
-                    updated_at: this.toNigeriaTime()
+                    last_clicked_at: this.getCurrentTimestamp(),
+                    updated_at: this.getCurrentTimestamp()
                 })
                 .eq('id', linkId)
 
@@ -389,14 +412,14 @@ class LinkService {
             const temporalMessage = link.custom_message || `Hello! I'd like to chat with you.`
             const temporalWhatsappUrl = `https://wa.me/${formattedTemporalPhone}?text=${encodeURIComponent(temporalMessage)}`
 
-            // Update link with temporal target (Nigeria time)
+            // Update link with temporal target
             const { error } = await supabase
                 .from('whatsapp_links')
                 .update({
                     temporal_target_phone: formattedTemporalPhone,
                     temporal_whatsapp_url: temporalWhatsappUrl,
-                    temporal_set_at: this.toNigeriaTime(),
-                    updated_at: this.toNigeriaTime()
+                    temporal_set_at: this.getCurrentTimestamp(),
+                    updated_at: this.getCurrentTimestamp()
                 })
                 .eq('short_code', normalizedCode)
                 .eq('creator_phone', phoneNumber)
@@ -444,7 +467,7 @@ class LinkService {
                     temporal_target_phone: null,
                     temporal_whatsapp_url: null,
                     temporal_set_at: null,
-                    updated_at: this.toNigeriaTime()
+                    updated_at: this.getCurrentTimestamp()
                 })
                 .eq('short_code', normalizedCode)
                 .eq('creator_phone', phoneNumber)
@@ -528,7 +551,7 @@ class LinkService {
         }
     }
 
-    // Get comprehensive link analytics (all dates in Nigeria time)
+    // FIXED: Get comprehensive link analytics (convert UTC to Nigeria time for display)
     static async getLinkAnalytics(linkId) {
         try {
             const { data: clicks, error } = await supabase
@@ -571,28 +594,18 @@ class LinkService {
             
             let uniqueClicks = 0
 
-            // Process all clicks (convert to Nigeria time for analysis)
+            // Process all clicks (convert UTC to Nigeria time)
             clicks.forEach(click => {
-                // Parse as Nigeria time
-                const date = new Date(click.clicked_at)
-                
-                // Hour analysis (0-23) in Nigeria time
-                const hour = parseInt(date.toLocaleString('en-US', { 
-                    timeZone: 'Africa/Lagos', 
-                    hour: '2-digit', 
-                    hour12: false 
-                }))
+                // Get hour in Nigeria timezone
+                const hour = this.getNigeriaHour(click.clicked_at)
                 clicksByHour[hour] = (clicksByHour[hour] || 0) + 1
                 
-                // Day analysis (YYYY-MM-DD) in Nigeria time
-                const dayKey = date.toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' })
+                // Get day in Nigeria timezone
+                const dayKey = this.getNigeriaDateString(click.clicked_at)
                 clicksByDay[dayKey] = (clicksByDay[dayKey] || 0) + 1
                 
-                // Day of week analysis in Nigeria time
-                const dayOfWeek = date.toLocaleDateString('en-US', { 
-                    timeZone: 'Africa/Lagos', 
-                    weekday: 'long' 
-                })
+                // Get day of week in Nigeria timezone
+                const dayOfWeek = this.getNigeriaDayOfWeek(click.clicked_at)
                 clicksByDayOfWeek[dayOfWeek]++
                 
                 // Count unique clicks
@@ -639,7 +652,8 @@ class LinkService {
             const uniqueClickRate = clicks.length > 0 ? ((uniqueClicks / clicks.length) * 100).toFixed(1) : 0
 
             // Format peak day nicely
-            const formattedPeakDay = peakDay ? new Date(peakDay).toLocaleDateString('en-GB', {
+            const formattedPeakDay = peakDay ? new Date(peakDay + 'T00:00:00Z').toLocaleDateString('en-GB', {
+                timeZone: 'Africa/Lagos',
                 day: '2-digit',
                 month: 'short',
                 year: 'numeric'
@@ -668,7 +682,7 @@ class LinkService {
                 uniqueClickRate: `${uniqueClickRate}%`,
                 averageClicksPerDay: parseFloat(averageClicksPerDay),
                 
-                // Timeline (Nigeria time)
+                // Timeline
                 firstClick: clicks[0].clicked_at,
                 lastClick: clicks[clicks.length - 1].clicked_at,
                 
@@ -796,9 +810,9 @@ class LinkService {
                 .from('whatsapp_links')
                 .update({ 
                     is_active: false,
-                    deactivated_at: this.toNigeriaTime(),
+                    deactivated_at: this.getCurrentTimestamp(),
                     deactivation_reason: reason,
-                    updated_at: this.toNigeriaTime()
+                    updated_at: this.getCurrentTimestamp()
                 })
                 .eq('short_code', normalizedCode)
 
@@ -828,7 +842,7 @@ class LinkService {
         }
     }
 
-    // Process daily billing
+    // FIXED: Process daily billing
     static async processDailyBilling() {
         try {
             const now = new Date()
@@ -867,9 +881,9 @@ class LinkService {
                     await supabase
                         .from('whatsapp_links')
                         .update({ 
-                            next_billing_at: this.toNigeriaTime(nextBilling),
-                            expires_at: this.toNigeriaTime(nextBilling),
-                            updated_at: this.toNigeriaTime()
+                            next_billing_at: nextBilling.toISOString(),
+                            expires_at: nextBilling.toISOString(),
+                            updated_at: this.getCurrentTimestamp()
                         })
                         .eq('id', link.id)
 
