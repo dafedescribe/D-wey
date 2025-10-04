@@ -16,6 +16,7 @@ class IntentMatcher {
         best_links: ['best', 'top', 'highest', 'most', 'good', 'great', 'winning', 'performer'],
         worst_links: ['worst', 'lowest', 'bottom', 'bad', 'poor', 'weak', 'least'],
         kill_link: ['delete', 'remove', 'kill', 'destroy', 'deactivate', 'cancel'],
+        reactivate_link: ['reactivate', 'activate', 'enable', 'restart', 'resume', 'restore', 'revive'],
         redeem_coupon: ['coupon', 'code', 'promo', 'redeem', 'claim', 'use', 'enter'],
         help_overview: ['help', 'menu', 'start', 'hi', 'hello', 'hey', 'sup', 'yo', 'info', 'what', 'how', 'command'],
         guide_create: ['guide create', 'help create', 'how create', 'how make link', 'learn create'],
@@ -62,6 +63,9 @@ class IntentMatcher {
         ],
         kill_link: [
             /^(delete|remove|kill|destroy|deactivate)\s+[a-z0-9]{3,}$/i
+        ],
+        reactivate_link: [
+            /^(reactivate|activate|enable|restart|resume|restore|revive)\s+[a-z0-9]{3,}$/i
         ],
         redeem_coupon: [
             /^(coupon|code|promo|redeem|claim|use)\s+[a-z0-9]+/i
@@ -152,6 +156,13 @@ class IntentMatcher {
             if ((this.fuzzyMatch(firstWord, 'redirect') || this.fuzzyMatch(firstWord, 'temp')) &&
                 this.looksLikeShortCode(secondWord) && words.length >= 3) {
                 return 'set_temporal'
+            }
+
+            // "reactivate CODE" or "activate CODE"
+            if ((this.fuzzyMatch(firstWord, 'reactivate') || this.fuzzyMatch(firstWord, 'activate') ||
+                 this.fuzzyMatch(firstWord, 'enable') || this.fuzzyMatch(firstWord, 'restart') ||
+                 this.fuzzyMatch(firstWord, 'resume')) && this.looksLikeShortCode(secondWord)) {
+                return 'reactivate_link'
             }
 
             // "delete CODE" or "remove CODE"
@@ -249,6 +260,7 @@ class IntentMatcher {
             if (intent === 'link_info' && this.containsShortCode(text)) score += 3
             if (intent === 'redeem_coupon' && this.containsShortCode(text)) score += 2
             if (intent === 'search_links' && /\d{10,}/.test(text)) score += 4
+            if (intent === 'reactivate_link' && this.containsShortCode(text)) score += 3
 
             if (score > bestScore) {
                 bestScore = score
@@ -278,7 +290,8 @@ class IntentMatcher {
             'find': ['find', 'search', 'look', 'locate'],
             'best': ['best', 'top', 'good', 'highest'],
             'worst': ['worst', 'bad', 'lowest', 'poor'],
-            'delete': ['delet', 'remove', 'kill', 'del', 'rm']
+            'delete': ['delet', 'remove', 'kill', 'del', 'rm'],
+            'reactivate': ['reactiv', 'activate', 'enable', 'restart', 'resume', 'restore']
         }
 
         for (const [command, variations] of Object.entries(commandMap)) {
@@ -296,6 +309,7 @@ class IntentMatcher {
                     if (command === 'best') return 'best_links'
                     if (command === 'worst') return 'worst_links'
                     if (command === 'delete') return words.length >= 2 ? 'kill_link' : null
+                    if (command === 'reactivate') return words.length >= 2 ? 'reactivate_link' : null
                 }
             }
         }
@@ -335,6 +349,11 @@ class IntentMatcher {
         // Performance queries
         if (/\b(best|top|good|highest|great|winning)/i.test(text)) return 'best_links'
         if (/\b(worst|bad|poor|lowest|weak|least)/i.test(text)) return 'worst_links'
+        
+        // Reactivation
+        if (/\b(reactivate|activate|enable|bring.*back|turn.*on|restart|resume)/i.test(text)) {
+            if (this.containsShortCode(text)) return 'reactivate_link'
+        }
         
         // Deletion
         if (/\b(delete|remove|kill|stop|cancel|end)/i.test(text)) {
@@ -470,7 +489,7 @@ class IntentMatcher {
         }
         
         // Try to find closest command
-        const commands = ['create', 'balance', 'stats', 'links', 'help', 'coupon', 'find', 'best', 'worst']
+        const commands = ['create', 'balance', 'stats', 'links', 'help', 'coupon', 'find', 'best', 'worst', 'reactivate']
         for (const word of words) {
             for (const cmd of commands) {
                 if (this.levenshteinDistance(word, cmd) <= 2) {

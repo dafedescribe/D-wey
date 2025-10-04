@@ -6,6 +6,7 @@ class LinkService {
     static PRICING = {
         CREATE_LINK: 250,
         DAILY_MAINTENANCE: 20,
+        REACTIVATE_LINK: 100,
         LINK_INFO_CHECK: 10,
         SET_TEMPORAL_TARGET: 10,
         KILL_TEMPORAL_TARGET: 10
@@ -131,7 +132,7 @@ class LinkService {
             // Create default message if none provided
             const defaultMessage = customMessage || `Hello! I'd like to chat with you.`
             
-            // Generate WhatsApp URL
+            // Generate WhatsApp URL - preserve line breaks in the message
             const whatsappUrl = `https://wa.me/${formattedTargetPhone}?text=${encodeURIComponent(defaultMessage)}`
             
             // Create redirect link
@@ -383,6 +384,66 @@ class LinkService {
         }
     }
 
+    // Reactivate a link
+    static async reactivateLink(phoneNumber, shortCode) {
+        try {
+            const normalizedCode = shortCode.toLowerCase()
+            
+            // Verify ownership
+            const link = await this.verifyLinkOwnership(phoneNumber, normalizedCode)
+            
+            // Check if already active
+            if (link.is_active) {
+                throw new Error('Link is already active')
+            }
+
+            // Check balance
+            const user = await UserService.getUserByPhone(phoneNumber)
+            if (user.wallet_balance < this.PRICING.REACTIVATE_LINK) {
+                throw new Error(`Insufficient balance. Need ${this.PRICING.REACTIVATE_LINK} tums`)
+            }
+
+            // Calculate new expiration (24 hours from now)
+            const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
+
+            // Reactivate the link
+            const { error } = await supabase
+                .from('whatsapp_links')
+                .update({
+                    is_active: true,
+                    expires_at: expiresAt.toISOString(),
+                    next_billing_at: expiresAt.toISOString(),
+                    deactivated_at: null,
+                    deactivation_reason: null,
+                    updated_at: this.getCurrentTimestamp()
+                })
+                .eq('short_code', normalizedCode)
+                .eq('creator_phone', phoneNumber)
+
+            if (error) throw error
+
+            // Deduct tums
+            await UserService.deductFromWallet(
+                phoneNumber,
+                this.PRICING.REACTIVATE_LINK,
+                `Link reactivated (${normalizedCode})`
+            )
+
+            console.log(`Link reactivated: ${normalizedCode}`)
+            return { 
+                success: true, 
+                shortCode: normalizedCode,
+                targetPhone: link.target_phone,
+                redirectUrl: link.redirect_url,
+                expiresAt
+            }
+
+        } catch (error) {
+            console.error('Error reactivating link:', error.message)
+            throw error
+        }
+    }
+
     // Set temporal target number
     static async setTemporalTarget(phoneNumber, shortCode, temporalTargetPhone) {
         try {
@@ -408,7 +469,7 @@ class LinkService {
             // Soft register temporal target
             await UserService.softRegisterUser(formattedTemporalPhone)
 
-            // Update temporal target URL
+            // Update temporal target URL - preserve line breaks
             const temporalMessage = link.custom_message || `Hello! I'd like to chat with you.`
             const temporalWhatsappUrl = `https://wa.me/${formattedTemporalPhone}?text=${encodeURIComponent(temporalMessage)}`
 
@@ -740,7 +801,45 @@ class LinkService {
         }
     }
 
-    // Get links by target number
+    // Search links by phone number (as target OR creator)
+    static async searchLinksByPhone(userPhone, searchPhone) {
+        try {
+            const formattedSearch = this.validatePhoneNumber(searchPhone)
+            
+            // Get links where searchPhone is the target
+            const { data: asTarget, error: targetError } = await supabase
+                .from('whatsapp_links')
+                .select('*')
+                .eq('creator_phone', userPhone)
+                .eq('target_phone', formattedSearch)
+                .order('created_at', { ascending: false })
+
+            if (targetError) throw targetError
+
+            // Get links where searchPhone is the creator
+            const { data: asCreator, error: creatorError } = await supabase
+                .from('whatsapp_links')
+                .select('*')
+                .eq('creator_phone', formattedSearch)
+                .or(`target_phone.eq.${userPhone},temporal_target_phone.eq.${userPhone}`)
+                .order('created_at', { ascending: false })
+
+            if (creatorError) throw creatorError
+
+            return {
+                asTarget: asTarget || [],
+                asCreator: asCreator || []
+            }
+        } catch (error) {
+            console.error('Error searching links by phone:', error.message)
+            return {
+                asTarget: [],
+                asCreator: []
+            }
+        }
+    }
+
+    // Get links by target number (backwards compatibility)
     static async getLinksByTarget(phoneNumber, targetPhone) {
         try {
             const formattedTarget = this.validatePhoneNumber(targetPhone)

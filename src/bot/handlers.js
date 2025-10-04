@@ -428,21 +428,50 @@ function handleMessage(sock) {
                         return
                     }
 
-                    let message = `📋 *Your Links* (${links.length} total)\n\n`
-                    links.slice(0, 10).forEach((link, index) => {
-                        message += `${index + 1}. *${link.short_code}*\n`
-                        message += `   📊 ${link.total_clicks} clicks (${link.unique_clicks} unique)\n`
-                        message += `   ${link.is_active ? '✅ Active' : '❌ Inactive'}\n\n`
-                    })
-                    
-                    if (links.length > 10) {
-                        message += `\n...and ${links.length - 10} more\n\n`
+                    // Categorize links
+                    const createdByMe = links.filter(l => l.creator_phone === phoneNumber)
+                    const sharedWithMe = links.filter(l => l.creator_phone !== phoneNumber)
+
+                    let message = `📋 *Your Links Overview*\n\n`
+                    message += `Total: ${links.length} link(s)\n`
+                    message += `━━━━━━━━━━━━━━━━\n\n`
+
+                    // Show created by me
+                    if (createdByMe.length > 0) {
+                        message += `👤 *Created by You* (${createdByMe.length})\n\n`
+                        createdByMe.slice(0, 5).forEach((link, index) => {
+                            message += `${index + 1}. *${link.short_code}*\n`
+                            message += `   📊 ${link.total_clicks} clicks (${link.unique_clicks} unique)\n`
+                            message += `   📱 Target: ${link.target_phone}\n`
+                            message += `   ${link.is_active ? '✅ Active' : '❌ Inactive'}\n\n`
+                        })
+                        if (createdByMe.length > 5) {
+                            message += `...and ${createdByMe.length - 5} more\n\n`
+                        }
+                    }
+
+                    // Show shared with me
+                    if (sharedWithMe.length > 0) {
+                        message += `🔗 *Shared With You* (${sharedWithMe.length})\n\n`
+                        sharedWithMe.slice(0, 5).forEach((link, index) => {
+                            const relationship = link.target_phone === phoneNumber ? 'Target' : 
+                                               link.temporal_target_phone === phoneNumber ? 'Temp Target' : 'Unknown'
+                            message += `${index + 1}. *${link.short_code}*\n`
+                            message += `   👤 Creator: ${link.creator_phone}\n`
+                            message += `   🏷️ You are: ${relationship}\n`
+                            message += `   📊 ${link.total_clicks} clicks\n`
+                            message += `   ${link.is_active ? '✅ Active' : '❌ Inactive'}\n\n`
+                        })
+                        if (sharedWithMe.length > 5) {
+                            message += `...and ${sharedWithMe.length - 5} more\n\n`
+                        }
                     }
                     
                     message += `━━━━━━━━━━━━━━━━\n`
                     message += `💡 *Quick Actions:*\n`
                     message += `• See details: *stats LINKCODE*\n`
-                    message += `• Find links to a number: *find 08012345678*\n`
+                    message += `• Find links: *find 08012345678*\n`
+                    message += `• Reactivate: *reactivate LINKCODE*\n`
                     message += `• See top performers: *best*\n`
                     message += `• See low performers: *worst*`
 
@@ -456,44 +485,72 @@ function handleMessage(sock) {
                 return
             }
 
-            // SEARCH LINKS BY TARGET
+            // SEARCH LINKS BY TARGET OR CREATOR
             if (intent === 'search_links') {
                 await UserService.softRegisterUser(phoneNumber, displayName)
                 
                 const parsed = parseSearchCommand(command)
                 
-                if (!parsed.targetPhone) {
+                if (!parsed.searchPhone) {
                     await sock.sendMessage(jid, { 
                         text: `🔍 *Find Links by Number*\n\n` +
-                              `This shows all your links that open a specific phone number.\n\n` +
+                              `This shows all your links related to a specific phone number.\n\n` +
                               `*How to use:*\n` +
                               `find PHONENUMBER\n\n` +
                               `*Example:*\n` +
-                              `find 08012345678` 
+                              `find 08012345678\n\n` +
+                              `You'll see links where this number is:\n` +
+                              `• The destination (target)\n` +
+                              `• The creator` 
                     })
                     return
                 }
 
                 try {
-                    const links = await LinkService.getLinksByTarget(phoneNumber, parsed.targetPhone)
+                    const results = await LinkService.searchLinksByPhone(phoneNumber, parsed.searchPhone)
 
-                    if (!links || links.length === 0) {
+                    if (!results.asTarget.length && !results.asCreator.length) {
                         await sock.sendMessage(jid, { 
                             text: `🔍 *Search Results*\n\n` +
-                                  `No links found for ${parsed.targetPhone}\n\n` +
+                                  `No links found for ${parsed.searchPhone}\n\n` +
                                   `*Create one:*\n` +
-                                  `create ${parsed.targetPhone}` 
+                                  `create ${parsed.searchPhone}` 
                         })
                         return
                     }
 
-                    let message = `🔍 *Links to ${parsed.targetPhone}*\n\n`
-                    message += `Found ${links.length} link(s):\n\n`
+                    let message = `🔍 *Search Results for ${parsed.searchPhone}*\n\n`
                     
-                    links.slice(0, 10).forEach((link, index) => {
-                        message += `${index + 1}. *${link.short_code}*\n`
-                        message += `   ${link.total_clicks} clicks\n\n`
-                    })
+                    // Links where this number is the target
+                    if (results.asTarget.length > 0) {
+                        message += `📱 *As Destination* (${results.asTarget.length})\n`
+                        message += `Links that open a chat with this number:\n\n`
+                        
+                        results.asTarget.slice(0, 5).forEach((link, index) => {
+                            message += `${index + 1}. *${link.short_code}*\n`
+                            message += `   📊 ${link.total_clicks} clicks\n`
+                            message += `   ${link.is_active ? '✅ Active' : '❌ Inactive'}\n\n`
+                        })
+                        if (results.asTarget.length > 5) {
+                            message += `...and ${results.asTarget.length - 5} more\n\n`
+                        }
+                    }
+
+                    // Links created by this number
+                    if (results.asCreator.length > 0) {
+                        message += `👤 *Created By This Number* (${results.asCreator.length})\n`
+                        message += `Links this person created:\n\n`
+                        
+                        results.asCreator.slice(0, 5).forEach((link, index) => {
+                            message += `${index + 1}. *${link.short_code}*\n`
+                            message += `   📱 Target: ${link.target_phone}\n`
+                            message += `   📊 ${link.total_clicks} clicks\n`
+                            message += `   ${link.is_active ? '✅ Active' : '❌ Inactive'}\n\n`
+                        })
+                        if (results.asCreator.length > 5) {
+                            message += `...and ${results.asCreator.length - 5} more\n\n`
+                        }
+                    }
 
                     await sock.sendMessage(jid, { text: message })
 
@@ -580,6 +637,74 @@ function handleMessage(sock) {
                 return
             }
 
+            // REACTIVATE LINK
+            if (intent === 'reactivate_link') {
+                await UserService.softRegisterUser(phoneNumber, displayName)
+                
+                const parsed = parseReactivateLinkCommand(command)
+                
+                if (!parsed.shortCode) {
+                    await sock.sendMessage(jid, { 
+                        text: `♻️ *Reactivate a Link*\n\n` +
+                              `Bring an inactive link back to life!\n\n` +
+                              `*How to use:*\n` +
+                              `reactivate LINKCODE\n\n` +
+                              `*Example:*\n` +
+                              `reactivate abc123\n\n` +
+                              `━━━━━━━━━━━━━━━━\n` +
+                              `💰 Cost: ${LinkService.PRICING.REACTIVATE_LINK} tums\n\n` +
+                              `📝 The link will be active for 24 hours and resume daily renewals.` 
+                    })
+                    return
+                }
+
+                try {
+                    // Check balance
+                    const user = await UserService.getUserByPhone(phoneNumber)
+                    if (user.wallet_balance < LinkService.PRICING.REACTIVATE_LINK) {
+                        await sock.sendMessage(jid, {
+                            text: `❌ *Not Enough Tums*\n\n` +
+                                  `You need *${LinkService.PRICING.REACTIVATE_LINK} tums* to reactivate.\n` +
+                                  `You have: *${user.wallet_balance} tums*\n\n` +
+                                  `🎫 Get more with: *coupon CODE*`
+                        })
+                        return
+                    }
+
+                    const result = await LinkService.reactivateLink(phoneNumber, parsed.shortCode)
+
+                    // Show updated balance
+                    const updatedUser = await UserService.getUserByPhone(phoneNumber)
+
+                    const expiryTime = new Date(result.expiresAt).toLocaleString('en-GB', {
+                        timeZone: 'Africa/Lagos',
+                        day: '2-digit',
+                        month: 'short',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    })
+
+                    await sock.sendMessage(jid, { 
+                        text: `✅ *Link Reactivated!*\n\n` +
+                              `🔗 Link: ${result.shortCode}\n` +
+                              `📱 Target: ${result.targetPhone}\n` +
+                              `⏰ Active until: ${expiryTime}\n\n` +
+                              `Your link is now active and will resume daily renewals!\n\n` +
+                              `━━━━━━━━━━━━━━━━\n` +
+                              `💰 Charged: ${LinkService.PRICING.REACTIVATE_LINK} tums\n` +
+                              `New balance: ${updatedUser.wallet_balance} tums\n\n` +
+                              `🔗 ${result.redirectUrl}` 
+                    })
+
+                } catch (error) {
+                    await sock.sendMessage(jid, { 
+                        text: `❌ *Error*\n\n${error.message}` 
+                    })
+                }
+                return
+            }
+
             // KILL LINK
             if (intent === 'kill_link') {
                 await UserService.softRegisterUser(phoneNumber, displayName)
@@ -594,7 +719,8 @@ function handleMessage(sock) {
                               `delete LINKCODE\n\n` +
                               `*Example:*\n` +
                               `delete abc123\n\n` +
-                              `⚠️ This cannot be undone!` 
+                              `⚠️ This cannot be undone!\n\n` +
+                              `💡 To temporarily deactivate, just let it expire or use *reactivate* later.` 
                     })
                     return
                 }
@@ -605,7 +731,8 @@ function handleMessage(sock) {
                     await sock.sendMessage(jid, { 
                         text: `✅ *Link Deleted*\n\n` +
                               `🔗 ${parsed.shortCode}\n\n` +
-                              `This link is now permanently inactive. Anyone who clicks it will see an error message.` 
+                              `This link is now permanently inactive. Anyone who clicks it will see an error message.\n\n` +
+                              `💡 Want it back? You can reactivate it with: *reactivate ${parsed.shortCode}*` 
                     })
 
                 } catch (error) {
@@ -698,6 +825,7 @@ function handleMessage(sock) {
                           `━━━━━━━━━━━━━━━━\n` +
                           `Create link: ${LinkService.PRICING.CREATE_LINK} tums\n` +
                           `Daily renewal: ${LinkService.PRICING.DAILY_MAINTENANCE} tums\n` +
+                          `Reactivate link: ${LinkService.PRICING.REACTIVATE_LINK} tums\n` +
                           `Check stats: ${LinkService.PRICING.LINK_INFO_CHECK} tums\n` +
                           `Set redirect: ${LinkService.PRICING.SET_TEMPORAL_TARGET} tums\n\n` +
                           `🎁 New users get ${UserService.SIGNUP_BONUS} free tums!\n` +
@@ -739,13 +867,15 @@ function handleMessage(sock) {
                           `create 08012345678 Hello! / myshop\n\n` +
                           `*Multi-line messages:*\n` +
                           `create 08012345678 Line 1\\nLine 2\\nLine 3 / code\n\n` +
+                          `The \\n creates a line break in the message!\n\n` +
                           `━━━━━━━━━━━━━━━━\n` +
                           `💡 *IMPORTANT NOTES*\n` +
                           `━━━━━━━━━━━━━━━━\n\n` +
                           `• Links cost ${LinkService.PRICING.CREATE_LINK} tums to create\n` +
                           `• They renew daily for ${LinkService.PRICING.DAILY_MAINTENANCE} tums\n` +
                           `• Both you AND your target can check stats\n` +
-                          `• If balance runs low, link stops working\n\n` +
+                          `• If balance runs low, link stops working\n` +
+                          `• Reactivate anytime for ${LinkService.PRICING.REACTIVATE_LINK} tums\n\n` +
                           `━━━━━━━━━━━━━━━━\n` +
                           `📖 *MORE GUIDES*\n` +
                           `━━━━━━━━━━━━━━━━\n` +
@@ -882,12 +1012,21 @@ function handleMessage(sock) {
                           `━━━━━━━━━━━━━━━━\n` +
                           `🔍 *FIND SPECIFIC LINKS*\n` +
                           `━━━━━━━━━━━━━━━━\n\n` +
-                          `*Find links to a number:*\n` +
+                          `*Find links by number:*\n` +
                           `find 08012345678\n\n` +
+                          `Shows links where this number is the destination OR creator!\n\n` +
                           `*See best performers:*\n` +
                           `best\n\n` +
                           `*See worst performers:*\n` +
                           `worst\n\n` +
+                          `━━━━━━━━━━━━━━━━\n` +
+                          `♻️ *REACTIVATE LINKS*\n` +
+                          `━━━━━━━━━━━━━━━━\n\n` +
+                          `*Bring a link back:*\n` +
+                          `reactivate LINKCODE\n\n` +
+                          `*Example:*\n` +
+                          `reactivate abc123\n\n` +
+                          `Cost: ${LinkService.PRICING.REACTIVATE_LINK} tums\n\n` +
                           `━━━━━━━━━━━━━━━━\n` +
                           `🗑️ *DELETE LINKS*\n` +
                           `━━━━━━━━━━━━━━━━\n\n` +
@@ -895,7 +1034,7 @@ function handleMessage(sock) {
                           `delete LINKCODE\n\n` +
                           `*Example:*\n` +
                           `delete abc123\n\n` +
-                          `⚠️ This cannot be undone!\n\n` +
+                          `⚠️ Can be reactivated later!\n\n` +
                           `━━━━━━━━━━━━━━━━\n` +
                           `💰 *ABOUT RENEWALS*\n` +
                           `━━━━━━━━━━━━━━━━\n\n` +
@@ -928,6 +1067,7 @@ function handleMessage(sock) {
                           `*Pricing:*\n` +
                           `• Create link: ${LinkService.PRICING.CREATE_LINK} tums\n` +
                           `• Daily renewal: ${LinkService.PRICING.DAILY_MAINTENANCE} tums\n` +
+                          `• Reactivate link: ${LinkService.PRICING.REACTIVATE_LINK} tums\n` +
                           `• Check stats: ${LinkService.PRICING.LINK_INFO_CHECK} tums\n` +
                           `• Set redirect: ${LinkService.PRICING.SET_TEMPORAL_TARGET} tums\n` +
                           `• Remove redirect: ${LinkService.PRICING.KILL_TEMPORAL_TARGET} tums\n\n` +
@@ -987,6 +1127,7 @@ function handleMessage(sock) {
                           `create NUMBER - Make new link\n` +
                           `links - See all your links\n` +
                           `links active - Active links only\n` +
+                          `reactivate CODE - Bring link back\n` +
                           `delete CODE - Remove a link\n\n` +
                           `━━━━━━━━━━━━━━━━\n` +
                           `📊 *TRACK PERFORMANCE*\n` +
@@ -994,7 +1135,7 @@ function handleMessage(sock) {
                           `stats CODE - Detailed analytics\n` +
                           `best - Top performers\n` +
                           `worst - Low performers\n` +
-                          `find NUMBER - Search by target\n\n` +
+                          `find NUMBER - Search by number\n\n` +
                           `━━━━━━━━━━━━━━━━\n` +
                           `⏰ *TEMPORARY REDIRECTS*\n` +
                           `━━━━━━━━━━━━━━━━\n` +
@@ -1050,7 +1191,7 @@ function handleMessage(sock) {
     }
 }
 
-// Parse create link command - supports /, |, and newlines
+// Parse create link command - supports /, |, and properly handles \n for line breaks
 function parseCreateLinkCommand(text) {
     const cleanText = text.trim()
     const parts = cleanText.split(/\s+/)
@@ -1080,7 +1221,7 @@ function parseCreateLinkCommand(text) {
         customMessage = restOfText.trim()
     }
 
-    // Handle newline escapes in message
+    // Handle newline escapes in message - convert \n to actual newlines
     if (customMessage) {
         customMessage = customMessage.replace(/\\n/g, '\n')
     }
@@ -1116,11 +1257,17 @@ function parseKillTemporalCommand(text) {
 // Parse search command
 function parseSearchCommand(text) {
     const parts = text.trim().split(/\s+/)
-    return { targetPhone: parts[1] || null }
+    return { searchPhone: parts[1] || null }
 }
 
 // Parse kill link command
 function parseKillLinkCommand(text) {
+    const parts = text.trim().split(/\s+/)
+    return { shortCode: parts[1] || null }
+}
+
+// Parse reactivate link command
+function parseReactivateLinkCommand(text) {
     const parts = text.trim().split(/\s+/)
     return { shortCode: parts[1] || null }
 }
@@ -1153,6 +1300,10 @@ function getSuggestions(text) {
     
     if (lower.includes('redirect') || lower.includes('temporal') || lower.includes('change')) {
         return `Set up a redirect with: *redirect LINKCODE NUMBER*`
+    }
+
+    if (lower.includes('reactivate') || lower.includes('activate') || lower.includes('enable')) {
+        return `Reactivate a link with: *reactivate LINKCODE*`
     }
     
     if (lower.match(/\d{10,}/)) {
