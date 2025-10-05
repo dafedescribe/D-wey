@@ -18,26 +18,45 @@ async function startApplication() {
         webServer.start()
         console.log('✅ Web server running!')
         
-        // Start daily billing scheduler (runs every 24 hours)
-        console.log('💰 Starting billing scheduler...')
+        // Start daily billing + deletion + notification scheduler (runs every 24 hours)
+        console.log('💰 Starting billing, notification & cleanup scheduler...')
         const billingInterval = setInterval(async () => {
             try {
-                console.log('💰 Running daily billing...')
+                console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+                console.log('⏰ Running daily maintenance...')
+                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
+                
+                // This now includes:
+                // 1. Billing active links
+                // 2. Sending 6-hour expiration warnings
+                // 3. Deleting links inactive for 24+ hours
                 await LinkService.processDailyBilling()
-                console.log('✅ Daily billing completed')
+                
+                console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+                console.log('✅ Daily maintenance completed')
+                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
             } catch (error) {
-                console.error('❌ Billing error:', error.message)
+                console.error('❌ Maintenance error:', error.message)
             }
         }, 24 * 60 * 60 * 1000) // 24 hours
 
-        // Run initial billing after 1 minute
+        // Run initial billing + cleanup after 1 minute
         setTimeout(async () => {
-            console.log('💰 Running initial billing check...')
+            console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+            console.log('💰 Running initial maintenance check...')
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
             try {
+                // This now includes:
+                // 1. Billing active links
+                // 2. Sending 6-hour expiration warnings  
+                // 3. Deleting links inactive for 24+ hours
                 await LinkService.processDailyBilling()
-                console.log('✅ Initial billing completed')
+                
+                console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+                console.log('✅ Initial maintenance completed')
+                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
             } catch (error) {
-                console.error('❌ Initial billing error:', error.message)
+                console.error('❌ Initial maintenance error:', error.message)
             }
         }, 60000) // 1 minute
 
@@ -50,6 +69,9 @@ async function startApplication() {
         console.log('  ✅ Link analytics (peak time, clicks)')
         console.log('  ✅ Shared link access (creator + target)')
         console.log('  ✅ Daily maintenance billing')
+        console.log('  ✅ WhatsApp notifications (deactivation, warnings, deletion)')
+        console.log('  ✅ 6-hour expiration warnings')
+        console.log('  ✅ Automatic inactive link deletion (24h)')
         console.log('  ✅ Coupon redemption')
         console.log('\n💰 Pricing:')
         console.log(`  - Create link: ${LinkService.PRICING.CREATE_LINK} tums`)
@@ -57,6 +79,15 @@ async function startApplication() {
         console.log(`  - Link info check: ${LinkService.PRICING.LINK_INFO_CHECK} tums`)
         console.log(`  - Set temporal target: ${LinkService.PRICING.SET_TEMPORAL_TARGET} tums`)
         console.log(`  - Kill temporal target: ${LinkService.PRICING.KILL_TEMPORAL_TARGET} tums`)
+        console.log(`  - Reactivate link: ${LinkService.PRICING.REACTIVATE_LINK} tums`)
+        console.log('\n🔔 Notification System:')
+        console.log('  - Immediate: Link deactivated (low balance)')
+        console.log('  - 18 hours: Warning (6 hours until deletion)')
+        console.log('  - 24 hours: Final notification + deletion')
+        console.log('\n🗑️ Auto-Cleanup:')
+        console.log('  - Inactive links deleted after 24 hours')
+        console.log('  - Click history deleted with links')
+        console.log('  - Users notified at each stage')
 
         // Handle graceful shutdown
         const gracefulShutdown = (signal) => {

@@ -12,6 +12,9 @@ class LinkService {
         KILL_TEMPORAL_TARGET: 10
     }
 
+    // WhatsApp socket for notifications
+    static whatsappSocket = null
+
     // FIXED: Store timestamps in UTC (standard practice)
     static getCurrentTimestamp() {
         return new Date().toISOString()
@@ -95,6 +98,30 @@ class LinkService {
         }
         
         return cleanNumber
+    }
+
+    // Set WhatsApp socket for notifications
+    static setWhatsAppSocket(sock) {
+        this.whatsappSocket = sock
+        console.log('📱 WhatsApp socket set for link notifications')
+    }
+
+    // Send notification to user via WhatsApp
+    static async notifyUser(phoneNumber, message) {
+        try {
+            if (!this.whatsappSocket) {
+                console.log('⚠️ WhatsApp socket not available for notifications')
+                return false
+            }
+
+            const jid = `${phoneNumber}@s.whatsapp.net`
+            await this.whatsappSocket.sendMessage(jid, { text: message })
+            console.log(`📤 Notification sent to ${phoneNumber}`)
+            return true
+        } catch (error) {
+            console.error(`❌ Failed to send notification to ${phoneNumber}:`, error.message)
+            return false
+        }
     }
 
     // Create WhatsApp redirect link
@@ -415,6 +442,7 @@ class LinkService {
                     next_billing_at: expiresAt.toISOString(),
                     deactivated_at: null,
                     deactivation_reason: null,
+                    deletion_warning_sent: null,
                     updated_at: this.getCurrentTimestamp()
                 })
                 .eq('short_code', normalizedCode)
@@ -925,6 +953,155 @@ class LinkService {
         }
     }
 
+    // Notify users about links expiring soon (6 hours warning)
+    static async notifyExpiringLinks() {
+        try {
+            const eighteenHoursAgo = new Date(Date.now() - 18 * 60 * 60 * 1000)
+            const seventeenHoursAgo = new Date(Date.now() - 17 * 60 * 60 * 1000)
+            
+            // Find links that were deactivated between 17-18 hours ago and haven't been warned
+            const { data: expiringLinks, error } = await supabase
+                .from('whatsapp_links')
+                .select('*')
+                .eq('is_active', false)
+                .not('deactivated_at', 'is', null)
+                .gte('deactivated_at', eighteenHoursAgo.toISOString())
+                .lte('deactivated_at', seventeenHoursAgo.toISOString())
+                .is('deletion_warning_sent', null)
+
+            if (error) throw error
+            
+            if (!expiringLinks || expiringLinks.length === 0) {
+                console.log('✅ No links need expiration warnings')
+                return { notified: 0 }
+            }
+
+            console.log(`⚠️ Sending expiration warnings for ${expiringLinks.length} links`)
+
+            let notifiedCount = 0
+            for (const link of expiringLinks) {
+                try {
+                    const hoursLeft = Math.round((new Date(link.deactivated_at).getTime() + 24 * 60 * 60 * 1000 - Date.now()) / (60 * 60 * 1000))
+                    
+                    const message = `⚠️ *Link Expiring Soon!*\n\n` +
+                        `Your link *${link.short_code}* will be permanently deleted in approximately *${hoursLeft} hours*.\n\n` +
+                        `📊 *Current Stats:*\n` +
+                        `• Total clicks: ${link.total_clicks}\n` +
+                        `• Unique clicks: ${link.unique_clicks}\n` +
+                        `• Target: ${link.target_phone}\n\n` +
+                        `━━━━━━━━━━━━━━━━\n` +
+                        `💡 *Want to keep it?*\n` +
+                        `Reactivate now: *reactivate ${link.short_code}*\n\n` +
+                        `Cost: ${this.PRICING.REACTIVATE_LINK} tums\n\n` +
+                        `⚠️ After deletion, this link and all its data will be gone forever!`
+
+                    const sent = await this.notifyUser(link.creator_phone, message)
+                    
+                    if (sent) {
+                        // Mark as warned
+                        await supabase
+                            .from('whatsapp_links')
+                            .update({ 
+                                deletion_warning_sent: this.getCurrentTimestamp(),
+                                updated_at: this.getCurrentTimestamp()
+                            })
+                            .eq('id', link.id)
+                        
+                        notifiedCount++
+                    }
+                } catch (error) {
+                    console.error(`Error notifying about link ${link.short_code}:`, error.message)
+                }
+            }
+
+            console.log(`✅ Sent ${notifiedCount} expiration warnings`)
+            return { notified: notifiedCount }
+
+        } catch (error) {
+            console.error('❌ Error sending expiration warnings:', error.message)
+            return { notified: 0 }
+        }
+    }
+
+    // Delete inactive links that have been inactive for more than 24 hours
+    static async deleteInactiveLinks() {
+        try {
+            const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000)
+            
+            // Find inactive links that were deactivated more than 24 hours ago
+            const { data: linksToDelete, error: fetchError } = await supabase
+                .from('whatsapp_links')
+                .select('id, short_code, creator_phone, deactivated_at, total_clicks, unique_clicks, target_phone')
+                .eq('is_active', false)
+                .not('deactivated_at', 'is', null)
+                .lte('deactivated_at', oneDayAgo.toISOString())
+
+            if (fetchError) throw fetchError
+            
+            if (!linksToDelete || linksToDelete.length === 0) {
+                console.log('✅ No inactive links to delete')
+                return { deleted: 0, links: [] }
+            }
+
+            console.log(`🗑️ Found ${linksToDelete.length} inactive links to delete`)
+
+            const deletedLinks = []
+            
+            for (const link of linksToDelete) {
+                try {
+                    // Send final notification before deletion
+                    const finalMessage = `🗑️ *Link Deleted*\n\n` +
+                        `Your inactive link *${link.short_code}* has been permanently deleted.\n\n` +
+                        `📊 *Final Stats:*\n` +
+                        `• Total clicks: ${link.total_clicks}\n` +
+                        `• Unique clicks: ${link.unique_clicks}\n` +
+                        `• Target: ${link.target_phone}\n\n` +
+                        `━━━━━━━━━━━━━━━━\n` +
+                        `💡 *Create a new link anytime:*\n` +
+                        `create ${link.target_phone}\n\n` +
+                        `💰 Cost: ${this.PRICING.CREATE_LINK} tums`
+
+                    await this.notifyUser(link.creator_phone, finalMessage)
+
+                    // Delete associated clicks first (foreign key constraint)
+                    const { error: clicksError } = await supabase
+                        .from('link_clicks')
+                        .delete()
+                        .eq('link_id', link.id)
+
+                    if (clicksError) {
+                        console.error(`❌ Error deleting clicks for ${link.short_code}:`, clicksError.message)
+                        continue
+                    }
+
+                    // Delete the link
+                    const { error: deleteError } = await supabase
+                        .from('whatsapp_links')
+                        .delete()
+                        .eq('id', link.id)
+
+                    if (deleteError) {
+                        console.error(`❌ Error deleting link ${link.short_code}:`, deleteError.message)
+                        continue
+                    }
+
+                    console.log(`🗑️ Deleted inactive link: ${link.short_code} (inactive since ${link.deactivated_at})`)
+                    deletedLinks.push(link.short_code)
+
+                } catch (error) {
+                    console.error(`❌ Error processing link ${link.short_code}:`, error.message)
+                }
+            }
+
+            console.log(`✅ Deleted ${deletedLinks.length} inactive links`)
+            return { deleted: deletedLinks.length, links: deletedLinks }
+
+        } catch (error) {
+            console.error('❌ Error deleting inactive links:', error.message)
+            throw error
+        }
+    }
+
     // Kill/delete link permanently
     static async killLink(phoneNumber, shortCode) {
         try {
@@ -941,7 +1118,7 @@ class LinkService {
         }
     }
 
-    // FIXED: Process daily billing
+    // FIXED: Process daily billing with notifications and cleanup
     static async processDailyBilling() {
         try {
             const now = new Date()
@@ -955,43 +1132,66 @@ class LinkService {
             if (error) throw error
             if (!linksToBill || linksToBill.length === 0) {
                 console.log('No links need billing')
-                return
-            }
+            } else {
+                console.log(`Processing daily billing for ${linksToBill.length} links`)
 
-            console.log(`Processing daily billing for ${linksToBill.length} links`)
+                for (const link of linksToBill) {
+                    try {
+                        const creator = await UserService.getUserByPhone(link.creator_phone)
+                        
+                        if (!creator || creator.wallet_balance < this.PRICING.DAILY_MAINTENANCE) {
+                            await this.deactivateLink(link.short_code, 'insufficient_balance')
+                            console.log(`Link ${link.short_code} deactivated - insufficient balance`)
+                            
+                            // Send low balance notification
+                            const lowBalanceMsg = `⚠️ *Link Deactivated*\n\n` +
+                                `Your link *${link.short_code}* was deactivated due to insufficient balance.\n\n` +
+                                `💰 You need ${this.PRICING.DAILY_MAINTENANCE} tums for daily maintenance.\n` +
+                                `Current balance: ${creator?.wallet_balance || 0} tums\n\n` +
+                                `━━━━━━━━━━━━━━━━\n` +
+                                `⏰ *You have 24 hours to reactivate*\n\n` +
+                                `1️⃣ Get tums: *coupon CODE*\n` +
+                                `2️⃣ Reactivate: *reactivate ${link.short_code}*\n\n` +
+                                `Cost to reactivate: ${this.PRICING.REACTIVATE_LINK} tums\n\n` +
+                                `⚠️ After 24 hours, this link will be permanently deleted!`
+                            
+                            await this.notifyUser(link.creator_phone, lowBalanceMsg)
+                            continue
+                        }
 
-            for (const link of linksToBill) {
-                try {
-                    const creator = await UserService.getUserByPhone(link.creator_phone)
-                    
-                    if (!creator || creator.wallet_balance < this.PRICING.DAILY_MAINTENANCE) {
-                        await this.deactivateLink(link.short_code, 'insufficient_balance')
-                        console.log(`Link ${link.short_code} deactivated - insufficient balance`)
-                        continue
+                        await UserService.deductFromWallet(
+                            link.creator_phone,
+                            this.PRICING.DAILY_MAINTENANCE,
+                            `Daily maintenance - ${link.short_code}`
+                        )
+
+                        const nextBilling = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+                        await supabase
+                            .from('whatsapp_links')
+                            .update({ 
+                                next_billing_at: nextBilling.toISOString(),
+                                expires_at: nextBilling.toISOString(),
+                                updated_at: this.getCurrentTimestamp()
+                            })
+                            .eq('id', link.id)
+
+                        console.log(`Billed ${link.short_code} - ${this.PRICING.DAILY_MAINTENANCE} tums`)
+
+                    } catch (error) {
+                        console.error(`Error billing link ${link.short_code}:`, error.message)
                     }
-
-                    await UserService.deductFromWallet(
-                        link.creator_phone,
-                        this.PRICING.DAILY_MAINTENANCE,
-                        `Daily maintenance - ${link.short_code}`
-                    )
-
-                    const nextBilling = new Date(now.getTime() + 24 * 60 * 60 * 1000)
-                    await supabase
-                        .from('whatsapp_links')
-                        .update({ 
-                            next_billing_at: nextBilling.toISOString(),
-                            expires_at: nextBilling.toISOString(),
-                            updated_at: this.getCurrentTimestamp()
-                        })
-                        .eq('id', link.id)
-
-                    console.log(`Billed ${link.short_code} - ${this.PRICING.DAILY_MAINTENANCE} tums`)
-
-                } catch (error) {
-                    console.error(`Error billing link ${link.short_code}:`, error.message)
                 }
             }
+
+            // Send 6-hour warnings for links expiring soon
+            console.log('\n⚠️ Checking for links needing expiration warnings...')
+            const warningResult = await this.notifyExpiringLinks()
+            console.log(`✅ Sent ${warningResult.notified} expiration warnings\n`)
+
+            // Delete inactive links after 24 hours
+            console.log('🗑️ Checking for inactive links to delete...')
+            const deletionResult = await this.deleteInactiveLinks()
+            console.log(`✅ Cleanup complete: ${deletionResult.deleted} links deleted\n`)
 
         } catch (error) {
             console.error('Error processing daily billing:', error.message)

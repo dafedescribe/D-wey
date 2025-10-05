@@ -41,7 +41,7 @@ function handleMessage(sock) {
                 const user = await UserService.getUserByPhone(phoneNumber)
                 
                 const balance = user.wallet_balance || 0
-                const recentTransactions = (user.transactions || []).slice(0, 50)
+                const recentTransactions = (user.transactions || []).slice(0, 5)
                 
                 let message = `💰 *Your Wallet Balance*\n\n`
                 message += `You currently have: *${balance} tums*\n\n`
@@ -439,21 +439,18 @@ function handleMessage(sock) {
                     // Show created by me
                     if (createdByMe.length > 0) {
                         message += `👤 *Created by You* (${createdByMe.length})\n\n`
-                        createdByMe.slice(0, 50).forEach((link, index) => {
+                        createdByMe.forEach((link, index) => {
                             message += `${index + 1}. *${link.short_code}*\n`
                             message += `   📊 ${link.total_clicks} clicks (${link.unique_clicks} unique)\n`
                             message += `   📱 Target: ${link.target_phone}\n`
                             message += `   ${link.is_active ? '✅ Active' : '❌ Inactive'}\n\n`
                         })
-                        if (createdByMe.length > 5) {
-                            message += `...and ${createdByMe.length - 5} more\n\n`
-                        }
                     }
 
                     // Show shared with me
                     if (sharedWithMe.length > 0) {
                         message += `🔗 *Shared With You* (${sharedWithMe.length})\n\n`
-                        sharedWithMe.slice(0, 50).forEach((link, index) => {
+                        sharedWithMe.forEach((link, index) => {
                             const relationship = link.target_phone === phoneNumber ? 'Target' : 
                                                link.temporal_target_phone === phoneNumber ? 'Temp Target' : 'Unknown'
                             message += `${index + 1}. *${link.short_code}*\n`
@@ -462,9 +459,6 @@ function handleMessage(sock) {
                             message += `   📊 ${link.total_clicks} clicks\n`
                             message += `   ${link.is_active ? '✅ Active' : '❌ Inactive'}\n\n`
                         })
-                        if (sharedWithMe.length > 5) {
-                            message += `...and ${sharedWithMe.length - 5} more\n\n`
-                        }
                     }
                     
                     message += `━━━━━━━━━━━━━━━━\n`
@@ -526,14 +520,11 @@ function handleMessage(sock) {
                         message += `📱 *As Destination* (${results.asTarget.length})\n`
                         message += `Links that open a chat with this number:\n\n`
                         
-                        results.asTarget.slice(0, 50).forEach((link, index) => {
+                        results.asTarget.forEach((link, index) => {
                             message += `${index + 1}. *${link.short_code}*\n`
                             message += `   📊 ${link.total_clicks} clicks\n`
                             message += `   ${link.is_active ? '✅ Active' : '❌ Inactive'}\n\n`
                         })
-                        if (results.asTarget.length > 5) {
-                            message += `...and ${results.asTarget.length - 5} more\n\n`
-                        }
                     }
 
                     // Links created by this number
@@ -541,15 +532,12 @@ function handleMessage(sock) {
                         message += `👤 *Created By This Number* (${results.asCreator.length})\n`
                         message += `Links this person created:\n\n`
                         
-                        results.asCreator.slice(0, 50).forEach((link, index) => {
+                        results.asCreator.forEach((link, index) => {
                             message += `${index + 1}. *${link.short_code}*\n`
                             message += `   📱 Target: ${link.target_phone}\n`
                             message += `   📊 ${link.total_clicks} clicks\n`
                             message += `   ${link.is_active ? '✅ Active' : '❌ Inactive'}\n\n`
                         })
-                        if (results.asCreator.length > 5) {
-                            message += `...and ${results.asCreator.length - 5} more\n\n`
-                        }
                     }
 
                     await sock.sendMessage(jid, { text: message })

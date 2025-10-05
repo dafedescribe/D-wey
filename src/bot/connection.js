@@ -6,6 +6,7 @@ const { handleMessage } = require('./handlers')
 const { testConnection } = require('../config/database')
 const { setWhatsAppSocket } = require('../webhook/paymentWebhook')
 const UserService = require('../services/userService')
+const LinkService = require('../services/linkService') // ADD THIS LINE
 
 async function connectToWhatsApp() {
     // Test database connection first
@@ -27,6 +28,9 @@ async function connectToWhatsApp() {
     
     // Set socket for webhook notifications
     setWhatsAppSocket(sock)
+    
+    // SET SOCKET FOR LINK SERVICE NOTIFICATIONS - ADD THIS LINE
+    LinkService.setWhatsAppSocket(sock)
     
     // Start rate limiting cleanup (every 5 minutes)
     const rateLimitCleanup = setInterval(() => {
@@ -57,6 +61,7 @@ async function connectToWhatsApp() {
             console.log('🎫 Coupon system enabled')
             console.log('⚡ Rate limiting active (5 req/min per user)')
             console.log('🎁 Signup bonus: 1000 tums')
+            console.log('🔔 Link expiration notifications enabled')
         }
     })
     
