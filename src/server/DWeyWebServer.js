@@ -38,7 +38,7 @@ class DWeyWebServer {
     }
 
     setupRoutes() {
-        // Health check
+        // Health check - MUST be defined BEFORE the catch-all :shortCode route
         this.app.get('/health', (req, res) => {
             res.json({ 
                 status: 'd-wey is running',
@@ -47,7 +47,35 @@ class DWeyWebServer {
             })
         })
 
-        // Main redirect route
+        // API endpoint for link info - MUST be defined BEFORE the catch-all :shortCode route
+        this.app.get('/api/info/:shortCode', async (req, res) => {
+            try {
+                const { shortCode } = req.params
+                
+                const link = await LinkService.getLinkByShortCode(shortCode)
+                
+                if (!link) {
+                    return res.status(404).json({ error: 'Link not found' })
+                }
+
+                // Return basic public info only
+                const info = {
+                    shortCode: link.short_code,
+                    isActive: link.is_active,
+                    totalClicks: link.total_clicks,
+                    uniqueClicks: link.unique_clicks,
+                    createdAt: link.created_at,
+                    expiresAt: link.expires_at
+                }
+
+                res.json(info)
+            } catch (error) {
+                console.error('API info error:', error)
+                res.status(500).json({ error: 'Internal server error' })
+            }
+        })
+
+        // Main redirect route - defined AFTER specific routes
         this.app.get('/:shortCode', async (req, res) => {
             const { shortCode } = req.params
             console.log(`Redirect requested: ${shortCode}`)
@@ -115,32 +143,9 @@ class DWeyWebServer {
             }
         })
 
-        // API endpoint for link info
-        this.app.get('/api/info/:shortCode', async (req, res) => {
-            try {
-                const { shortCode } = req.params
-                
-                const link = await LinkService.getLinkByShortCode(shortCode)
-                
-                if (!link) {
-                    return res.status(404).json({ error: 'Link not found' })
-                }
-
-                // Return basic public info only
-                const info = {
-                    shortCode: link.short_code,
-                    isActive: link.is_active,
-                    totalClicks: link.total_clicks,
-                    uniqueClicks: link.unique_clicks,
-                    createdAt: link.created_at,
-                    expiresAt: link.expires_at
-                }
-
-                res.json(info)
-            } catch (error) {
-                console.error('API info error:', error)
-                res.status(500).json({ error: 'Internal server error' })
-            }
+        // Catch-all route for undefined paths
+        this.app.get('*', (req, res) => {
+            res.status(404).json({ error: 'Route not found' })
         })
     }
 
@@ -191,6 +196,7 @@ class DWeyWebServer {
             console.log(`d-wey server running on ${host}:${port}`)
             console.log(`Redirect: ${process.env.SHORT_DOMAIN || `http://${host}:${port}`}/:shortcode`)
             console.log(`Health: ${process.env.SHORT_DOMAIN || `http://${host}:${port}`}/health`)
+            console.log(`API Info: ${process.env.SHORT_DOMAIN || `http://${host}:${port}`}/api/info/:shortcode`)
         })
         
         return this.server

@@ -1119,35 +1119,97 @@ class LinkService {
     }
 
     // FIXED: Process daily billing with notifications and cleanup
+    // ===================================================================
+    // SCALABLE DAILY BILLING - Uses database functions for speed
+    // ===================================================================
+
     static async processDailyBilling() {
         try {
-            const now = new Date()
+            console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+            console.log('⏰ Starting daily maintenance...')
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
+
+            // STEP 1: Process billing (FAST - runs in database)
+            console.log('💰 Processing billing...')
+            const billingStart = Date.now()
             
-            const { data: linksToBill, error } = await supabase
-                .from('whatsapp_links')
-                .select('*')
-                .eq('is_active', true)
-                .lte('next_billing_at', now.toISOString())
+            const { data: billingResult, error: billingError } = await supabase
+                .rpc('process_daily_billing_batch')
+            
+            if (billingError) {
+                console.error('❌ Billing error:', billingError.message)
+                throw billingError
+            }
 
-            if (error) throw error
-            if (!linksToBill || linksToBill.length === 0) {
-                console.log('No links need billing')
-            } else {
-                console.log(`Processing daily billing for ${linksToBill.length} links`)
+            const result = billingResult[0]
+            const billingTime = ((Date.now() - billingStart) / 1000).toFixed(2)
+            
+            console.log(`✅ Billing completed in ${billingTime}s:`)
+            console.log(`   • Processed: ${result.processed} links`)
+            console.log(`   • Deactivated: ${result.deactivated} links`)
+            console.log(`   • Collected: ${result.total_collected} tums`)
 
-                for (const link of linksToBill) {
-                    try {
-                        const creator = await UserService.getUserByPhone(link.creator_phone)
-                        
-                        if (!creator || creator.wallet_balance < this.PRICING.DAILY_MAINTENANCE) {
-                            await this.deactivateLink(link.short_code, 'insufficient_balance')
-                            console.log(`Link ${link.short_code} deactivated - insufficient balance`)
+            // STEP 2: Send deactivation notifications (async, don't block)
+            if (result.deactivated > 0) {
+                console.log('\n📤 Sending deactivation notifications...')
+                this.sendDeactivationNotifications(result.deactivated_links)
+                    .catch(err => console.error('Notification error:', err.message))
+            }
+
+            // STEP 3: Send 6-hour expiration warnings
+            console.log('\n⚠️ Checking for expiration warnings...')
+            const warningStart = Date.now()
+            const warningResult = await this.notifyExpiringLinks()
+            const warningTime = ((Date.now() - warningStart) / 1000).toFixed(2)
+            console.log(`✅ Warnings sent in ${warningTime}s: ${warningResult.notified} notifications`)
+
+            // STEP 4: Delete inactive links (24+ hours old)
+            console.log('\n🗑️ Cleaning up inactive links...')
+            const cleanupStart = Date.now()
+            const cleanupResult = await this.deleteInactiveLinks()
+            const cleanupTime = ((Date.now() - cleanupStart) / 1000).toFixed(2)
+            console.log(`✅ Cleanup completed in ${cleanupTime}s: ${cleanupResult.deleted} links deleted`)
+
+            console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+            console.log('✅ Daily maintenance completed!')
+            console.log(`⏱️ Total time: ${((Date.now() - billingStart) / 1000).toFixed(2)}s`)
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
+
+        } catch (error) {
+            console.error('❌ Daily maintenance error:', error.message)
+        }
+    }
+
+    // ===================================================================
+    // SEND DEACTIVATION NOTIFICATIONS - Runs async, doesn't block billing
+    // ===================================================================
+
+    static async sendDeactivationNotifications(deactivatedLinksJson) {
+        try {
+            if (!deactivatedLinksJson || deactivatedLinksJson.length === 0) return
+
+            let successCount = 0
+            let failCount = 0
+
+            // Process in small batches to avoid overwhelming WhatsApp API
+            const BATCH_SIZE = 10
+            
+            for (let i = 0; i < deactivatedLinksJson.length; i += BATCH_SIZE) {
+                const batch = deactivatedLinksJson.slice(i, i + BATCH_SIZE)
+                
+                await Promise.allSettled(
+                    batch.map(async (linkJson) => {
+                        try {
+                            const link = JSON.parse(linkJson)
                             
-                            // Send low balance notification
-                            const lowBalanceMsg = `⚠️ *Link Deactivated*\n\n` +
+                            const message = `⚠️ *Link Deactivated*\n\n` +
                                 `Your link *${link.short_code}* was deactivated due to insufficient balance.\n\n` +
                                 `💰 You need ${this.PRICING.DAILY_MAINTENANCE} tums for daily maintenance.\n` +
-                                `Current balance: ${creator?.wallet_balance || 0} tums\n\n` +
+                                `Current balance: ${link.balance} tums\n\n` +
+                                `📊 *Link Stats:*\n` +
+                                `• Total clicks: ${link.total_clicks}\n` +
+                                `• Unique clicks: ${link.unique_clicks}\n` +
+                                `• Target: ${link.target_phone}\n\n` +
                                 `━━━━━━━━━━━━━━━━\n` +
                                 `⏰ *You have 24 hours to reactivate*\n\n` +
                                 `1️⃣ Get tums: *coupon CODE*\n` +
@@ -1155,46 +1217,191 @@ class LinkService {
                                 `Cost to reactivate: ${this.PRICING.REACTIVATE_LINK} tums\n\n` +
                                 `⚠️ After 24 hours, this link will be permanently deleted!`
                             
-                            await this.notifyUser(link.creator_phone, lowBalanceMsg)
-                            continue
+                            const sent = await this.notifyUser(link.creator_phone, message)
+                            if (sent) successCount++
+                            else failCount++
+                            
+                        } catch (err) {
+                            console.error('Notification parse error:', err.message)
+                            failCount++
                         }
-
-                        await UserService.deductFromWallet(
-                            link.creator_phone,
-                            this.PRICING.DAILY_MAINTENANCE,
-                            `Daily maintenance - ${link.short_code}`
-                        )
-
-                        const nextBilling = new Date(now.getTime() + 24 * 60 * 60 * 1000)
-                        await supabase
-                            .from('whatsapp_links')
-                            .update({ 
-                                next_billing_at: nextBilling.toISOString(),
-                                expires_at: nextBilling.toISOString(),
-                                updated_at: this.getCurrentTimestamp()
-                            })
-                            .eq('id', link.id)
-
-                        console.log(`Billed ${link.short_code} - ${this.PRICING.DAILY_MAINTENANCE} tums`)
-
-                    } catch (error) {
-                        console.error(`Error billing link ${link.short_code}:`, error.message)
-                    }
+                    })
+                )
+                
+                // Small delay between batches
+                if (i + BATCH_SIZE < deactivatedLinksJson.length) {
+                    await new Promise(resolve => setTimeout(resolve, 500))
                 }
             }
 
-            // Send 6-hour warnings for links expiring soon
-            console.log('\n⚠️ Checking for links needing expiration warnings...')
-            const warningResult = await this.notifyExpiringLinks()
-            console.log(`✅ Sent ${warningResult.notified} expiration warnings\n`)
-
-            // Delete inactive links after 24 hours
-            console.log('🗑️ Checking for inactive links to delete...')
-            const deletionResult = await this.deleteInactiveLinks()
-            console.log(`✅ Cleanup complete: ${deletionResult.deleted} links deleted\n`)
+            console.log(`📤 Deactivation notifications: ${successCount} sent, ${failCount} failed`)
 
         } catch (error) {
-            console.error('Error processing daily billing:', error.message)
+            console.error('Error sending deactivation notifications:', error.message)
+        }
+    }
+
+    // ===================================================================
+    // NOTIFY EXPIRING LINKS - Optimized with database function
+    // ===================================================================
+
+    static async notifyExpiringLinks() {
+        try {
+            // Get expiring links from database function
+            const { data: expiringLinks, error } = await supabase
+                .rpc('get_expiring_links')
+
+            if (error) throw error
+            
+            if (!expiringLinks || expiringLinks.length === 0) {
+                return { notified: 0 }
+            }
+
+            console.log(`⚠️ Sending expiration warnings for ${expiringLinks.length} links`)
+
+            let notifiedCount = 0
+            
+            // Send notifications in batches
+            const BATCH_SIZE = 10
+            
+            for (let i = 0; i < expiringLinks.length; i += BATCH_SIZE) {
+                const batch = expiringLinks.slice(i, i + BATCH_SIZE)
+                
+                const results = await Promise.allSettled(
+                    batch.map(async (link) => {
+                        try {
+                            const hoursLeft = Math.round(
+                                (new Date(link.deactivated_at).getTime() + 24 * 60 * 60 * 1000 - Date.now()) / 
+                                (60 * 60 * 1000)
+                            )
+                            
+                            const message = `⚠️ *Link Expiring Soon!*\n\n` +
+                                `Your link *${link.short_code}* will be permanently deleted in approximately *${hoursLeft} hours*.\n\n` +
+                                `📊 *Current Stats:*\n` +
+                                `• Total clicks: ${link.total_clicks}\n` +
+                                `• Unique clicks: ${link.unique_clicks}\n` +
+                                `• Target: ${link.target_phone}\n\n` +
+                                `━━━━━━━━━━━━━━━━\n` +
+                                `💡 *Want to keep it?*\n` +
+                                `Reactivate now: *reactivate ${link.short_code}*\n\n` +
+                                `Cost: ${this.PRICING.REACTIVATE_LINK} tums\n\n` +
+                                `⚠️ After deletion, this link and all its data will be gone forever!`
+
+                            const sent = await this.notifyUser(link.creator_phone, message)
+                            
+                            if (sent) {
+                                // Mark as warned
+                                await supabase
+                                    .from('whatsapp_links')
+                                    .update({ 
+                                        deletion_warning_sent: this.getCurrentTimestamp(),
+                                        updated_at: this.getCurrentTimestamp()
+                                    })
+                                    .eq('short_code', link.short_code)
+                                
+                                return true
+                            }
+                            return false
+                            
+                        } catch (error) {
+                            console.error(`Error notifying about link ${link.short_code}:`, error.message)
+                            return false
+                        }
+                    })
+                )
+                
+                notifiedCount += results.filter(r => r.status === 'fulfilled' && r.value).length
+                
+                // Small delay between batches
+                if (i + BATCH_SIZE < expiringLinks.length) {
+                    await new Promise(resolve => setTimeout(resolve, 500))
+                }
+            }
+
+            return { notified: notifiedCount }
+
+        } catch (error) {
+            console.error('❌ Error sending expiration warnings:', error.message)
+            return { notified: 0 }
+        }
+    }
+
+    // ===================================================================
+    // DELETE INACTIVE LINKS - Optimized with database function
+    // ===================================================================
+
+    static async deleteInactiveLinks() {
+        try {
+            // Get links ready for deletion
+            const { data: linksToDelete, error: fetchError } = await supabase
+                .rpc('get_links_for_deletion')
+
+            if (fetchError) throw fetchError
+            
+            if (!linksToDelete || linksToDelete.length === 0) {
+                return { deleted: 0, links: [] }
+            }
+
+            console.log(`🗑️ Found ${linksToDelete.length} inactive links to delete`)
+
+            let totalDeleted = 0
+            const deletedCodes = []
+            
+            // Send final notifications first (in batches)
+            const NOTIFY_BATCH_SIZE = 10
+            
+            for (let i = 0; i < linksToDelete.length; i += NOTIFY_BATCH_SIZE) {
+                const batch = linksToDelete.slice(i, i + NOTIFY_BATCH_SIZE)
+                
+                await Promise.allSettled(
+                    batch.map(async (link) => {
+                        const finalMessage = `🗑️ *Link Deleted*\n\n` +
+                            `Your inactive link *${link.short_code}* has been permanently deleted.\n\n` +
+                            `📊 *Final Stats:*\n` +
+                            `• Total clicks: ${link.total_clicks}\n` +
+                            `• Unique clicks: ${link.unique_clicks}\n` +
+                            `• Target: ${link.target_phone}\n\n` +
+                            `━━━━━━━━━━━━━━━━\n` +
+                            `💡 *Create a new link anytime:*\n` +
+                            `create ${link.target_phone}\n\n` +
+                            `💰 Cost: ${this.PRICING.CREATE_LINK} tums`
+
+                        await this.notifyUser(link.creator_phone, finalMessage)
+                            .catch(err => console.error(`Notification failed: ${err.message}`))
+                    })
+                )
+                
+                if (i + NOTIFY_BATCH_SIZE < linksToDelete.length) {
+                    await new Promise(resolve => setTimeout(resolve, 500))
+                }
+            }
+
+            // Delete links in batches using database function
+            const DELETE_BATCH_SIZE = 50
+            
+            for (let i = 0; i < linksToDelete.length; i += DELETE_BATCH_SIZE) {
+                const batch = linksToDelete.slice(i, i + DELETE_BATCH_SIZE)
+                const linkIds = batch.map(l => l.id)
+                
+                const { data: deletedCount, error: deleteError } = await supabase
+                    .rpc('delete_links_batch', { link_ids: linkIds })
+                
+                if (deleteError) {
+                    console.error('Batch deletion error:', deleteError.message)
+                    continue
+                }
+                
+                totalDeleted += deletedCount || 0
+                deletedCodes.push(...batch.map(l => l.short_code))
+                
+                console.log(`🗑️ Deleted batch ${Math.floor(i / DELETE_BATCH_SIZE) + 1}: ${deletedCount} links`)
+            }
+
+            return { deleted: totalDeleted, links: deletedCodes }
+
+        } catch (error) {
+            console.error('❌ Error deleting inactive links:', error.message)
+            return { deleted: 0, links: [] }
         }
     }
 }
