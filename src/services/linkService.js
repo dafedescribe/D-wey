@@ -250,56 +250,32 @@ class LinkService {
         throw new Error('Failed to generate unique short code')
     }
 
-    // Handle custom short code with variations
+    // ===================================================================
+    // SAFE CUSTOM SHORT CODE - No race conditions (FIXED)
+    // ===================================================================
     static async generateCustomShortCode(requested) {
-        const cleanCode = requested.replace(/[^a-zA-Z0-9]/g, '')
-        
-        if (cleanCode.length < 3) {
-            throw new Error('Custom short code must be at least 3 characters')
-        }
+        try {
+            // Use atomic database function to reserve the short code
+            const { data, error } = await supabase.rpc('reserve_short_code', {
+                p_requested_code: requested
+            })
 
-        if (cleanCode.length > 20) {
-            throw new Error('Custom short code must be less than 20 characters')
-        }
+            if (error) {
+                throw new Error('Database error checking shortcode availability')
+            }
 
-        // Convert to lowercase for storage and checking
-        const baseCode = cleanCode.toLowerCase()
-
-        // Try original first
-        const { data: existing, error } = await supabase
-            .from('whatsapp_links')
-            .select('id')
-            .eq('short_code', baseCode)
-            .maybeSingle()
-
-        if (error) {
-            throw new Error('Database error checking shortcode availability')
-        }
-
-        if (!existing) {
-            return baseCode
-        }
-
-        // Try variations: baseCode1, baseCode2, etc.
-        for (let i = 1; i <= 99; i++) {
-            const variation = `${baseCode}${i}`
+            const result = data[0]
             
-            const { data: existingVar, error: varError } = await supabase
-                .from('whatsapp_links')
-                .select('id')
-                .eq('short_code', variation)
-                .maybeSingle()
-
-            if (varError) {
-                continue
+            if (!result.success) {
+                throw new Error(result.error_message || 'Short code unavailable')
             }
 
-            if (!existingVar) {
-                return variation
-            }
+            return result.final_code
+
+        } catch (error) {
+            console.error('Error generating custom short code:', error.message)
+            throw error
         }
-
-        throw new Error(`Custom short code '${requested}' and variations are taken`)
     }
 
     // Get link by short code
@@ -337,73 +313,32 @@ class LinkService {
         }
     }
 
-    // FIXED: Track click with UTC timestamp
+    // ===================================================================
+    // SAFE CLICK TRACKING - No race conditions (FIXED)
+    // ===================================================================
     static async trackClick(linkId, hashedIP, hashedCookie) {
         try {
             console.log(`Tracking click for link: ${linkId}`)
             
-            // Check if this IP or cookie has clicked before
-            const { data: existingClicks, error: checkError } = await supabase
-                .from('link_clicks')
-                .select('id')
-                .eq('link_id', linkId)
-                .or(`hashed_ip.eq.${hashedIP},hashed_cookie.eq.${hashedCookie}`)
+            // Use atomic database function
+            const { data, error } = await supabase.rpc('track_link_click', {
+                p_link_id: linkId,
+                p_hashed_ip: hashedIP,
+                p_hashed_cookie: hashedCookie
+            })
 
-            if (checkError) {
-                console.error('Error checking existing click:', checkError)
+            if (error) {
+                console.error('Error tracking click:', error)
+                return { success: false, isUnique: false }
             }
 
-            const isUnique = !existingClicks || existingClicks.length === 0
-
-            // Store in UTC
-            const clickData = {
-                link_id: linkId,
-                hashed_ip: hashedIP,
-                hashed_cookie: hashedCookie,
-                is_unique: isUnique,
-                clicked_at: this.getCurrentTimestamp()
+            const result = data[0]
+            console.log(`Click tracked: ${linkId} (unique: ${result.is_unique})`)
+            
+            return { 
+                success: result.success, 
+                isUnique: result.is_unique 
             }
-
-            const { error: clickError } = await supabase
-                .from('link_clicks')
-                .insert([clickData])
-
-            if (clickError) {
-                console.error('Error inserting click:', clickError)
-                throw clickError
-            }
-
-            // Get current link stats
-            const { data: currentLink, error: getCurrentError } = await supabase
-                .from('whatsapp_links')
-                .select('total_clicks, unique_clicks')
-                .eq('id', linkId)
-                .single()
-
-            if (getCurrentError) {
-                throw getCurrentError
-            }
-
-            // Update link statistics
-            const newTotalClicks = (currentLink.total_clicks || 0) + 1
-            const newUniqueClicks = (currentLink.unique_clicks || 0) + (isUnique ? 1 : 0)
-
-            const { error: updateError } = await supabase
-                .from('whatsapp_links')
-                .update({ 
-                    total_clicks: newTotalClicks,
-                    unique_clicks: newUniqueClicks,
-                    last_clicked_at: this.getCurrentTimestamp(),
-                    updated_at: this.getCurrentTimestamp()
-                })
-                .eq('id', linkId)
-
-            if (updateError) {
-                throw updateError
-            }
-
-            console.log(`Click tracked: ${linkId} (unique: ${isUnique})`)
-            return { success: true, isUnique }
 
         } catch (error) {
             console.error('Error tracking click:', error.message)
@@ -953,155 +888,6 @@ class LinkService {
         }
     }
 
-    // Notify users about links expiring soon (6 hours warning)
-    static async notifyExpiringLinks() {
-        try {
-            const eighteenHoursAgo = new Date(Date.now() - 18 * 60 * 60 * 1000)
-            const seventeenHoursAgo = new Date(Date.now() - 17 * 60 * 60 * 1000)
-            
-            // Find links that were deactivated between 17-18 hours ago and haven't been warned
-            const { data: expiringLinks, error } = await supabase
-                .from('whatsapp_links')
-                .select('*')
-                .eq('is_active', false)
-                .not('deactivated_at', 'is', null)
-                .gte('deactivated_at', eighteenHoursAgo.toISOString())
-                .lte('deactivated_at', seventeenHoursAgo.toISOString())
-                .is('deletion_warning_sent', null)
-
-            if (error) throw error
-            
-            if (!expiringLinks || expiringLinks.length === 0) {
-                console.log('✅ No links need expiration warnings')
-                return { notified: 0 }
-            }
-
-            console.log(`⚠️ Sending expiration warnings for ${expiringLinks.length} links`)
-
-            let notifiedCount = 0
-            for (const link of expiringLinks) {
-                try {
-                    const hoursLeft = Math.round((new Date(link.deactivated_at).getTime() + 24 * 60 * 60 * 1000 - Date.now()) / (60 * 60 * 1000))
-                    
-                    const message = `⚠️ *Link Expiring Soon!*\n\n` +
-                        `Your link *${link.short_code}* will be permanently deleted in approximately *${hoursLeft} hours*.\n\n` +
-                        `📊 *Current Stats:*\n` +
-                        `• Total clicks: ${link.total_clicks}\n` +
-                        `• Unique clicks: ${link.unique_clicks}\n` +
-                        `• Target: ${link.target_phone}\n\n` +
-                        `━━━━━━━━━━━━━━━━\n` +
-                        `💡 *Want to keep it?*\n` +
-                        `Reactivate now: *reactivate ${link.short_code}*\n\n` +
-                        `Cost: ${this.PRICING.REACTIVATE_LINK} tums\n\n` +
-                        `⚠️ After deletion, this link and all its data will be gone forever!`
-
-                    const sent = await this.notifyUser(link.creator_phone, message)
-                    
-                    if (sent) {
-                        // Mark as warned
-                        await supabase
-                            .from('whatsapp_links')
-                            .update({ 
-                                deletion_warning_sent: this.getCurrentTimestamp(),
-                                updated_at: this.getCurrentTimestamp()
-                            })
-                            .eq('id', link.id)
-                        
-                        notifiedCount++
-                    }
-                } catch (error) {
-                    console.error(`Error notifying about link ${link.short_code}:`, error.message)
-                }
-            }
-
-            console.log(`✅ Sent ${notifiedCount} expiration warnings`)
-            return { notified: notifiedCount }
-
-        } catch (error) {
-            console.error('❌ Error sending expiration warnings:', error.message)
-            return { notified: 0 }
-        }
-    }
-
-    // Delete inactive links that have been inactive for more than 24 hours
-    static async deleteInactiveLinks() {
-        try {
-            const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000)
-            
-            // Find inactive links that were deactivated more than 24 hours ago
-            const { data: linksToDelete, error: fetchError } = await supabase
-                .from('whatsapp_links')
-                .select('id, short_code, creator_phone, deactivated_at, total_clicks, unique_clicks, target_phone')
-                .eq('is_active', false)
-                .not('deactivated_at', 'is', null)
-                .lte('deactivated_at', oneDayAgo.toISOString())
-
-            if (fetchError) throw fetchError
-            
-            if (!linksToDelete || linksToDelete.length === 0) {
-                console.log('✅ No inactive links to delete')
-                return { deleted: 0, links: [] }
-            }
-
-            console.log(`🗑️ Found ${linksToDelete.length} inactive links to delete`)
-
-            const deletedLinks = []
-            
-            for (const link of linksToDelete) {
-                try {
-                    // Send final notification before deletion
-                    const finalMessage = `🗑️ *Link Deleted*\n\n` +
-                        `Your inactive link *${link.short_code}* has been permanently deleted.\n\n` +
-                        `📊 *Final Stats:*\n` +
-                        `• Total clicks: ${link.total_clicks}\n` +
-                        `• Unique clicks: ${link.unique_clicks}\n` +
-                        `• Target: ${link.target_phone}\n\n` +
-                        `━━━━━━━━━━━━━━━━\n` +
-                        `💡 *Create a new link anytime:*\n` +
-                        `create ${link.target_phone}\n\n` +
-                        `💰 Cost: ${this.PRICING.CREATE_LINK} tums`
-
-                    await this.notifyUser(link.creator_phone, finalMessage)
-
-                    // Delete associated clicks first (foreign key constraint)
-                    const { error: clicksError } = await supabase
-                        .from('link_clicks')
-                        .delete()
-                        .eq('link_id', link.id)
-
-                    if (clicksError) {
-                        console.error(`❌ Error deleting clicks for ${link.short_code}:`, clicksError.message)
-                        continue
-                    }
-
-                    // Delete the link
-                    const { error: deleteError } = await supabase
-                        .from('whatsapp_links')
-                        .delete()
-                        .eq('id', link.id)
-
-                    if (deleteError) {
-                        console.error(`❌ Error deleting link ${link.short_code}:`, deleteError.message)
-                        continue
-                    }
-
-                    console.log(`🗑️ Deleted inactive link: ${link.short_code} (inactive since ${link.deactivated_at})`)
-                    deletedLinks.push(link.short_code)
-
-                } catch (error) {
-                    console.error(`❌ Error processing link ${link.short_code}:`, error.message)
-                }
-            }
-
-            console.log(`✅ Deleted ${deletedLinks.length} inactive links`)
-            return { deleted: deletedLinks.length, links: deletedLinks }
-
-        } catch (error) {
-            console.error('❌ Error deleting inactive links:', error.message)
-            throw error
-        }
-    }
-
     // Kill/delete link permanently
     static async killLink(phoneNumber, shortCode) {
         try {
@@ -1118,18 +904,17 @@ class LinkService {
         }
     }
 
-    // FIXED: Process daily billing with notifications and cleanup
     // ===================================================================
-    // SCALABLE DAILY BILLING - Uses database functions for speed
+    // DAILY BILLING - Already race-condition-free via database function
     // ===================================================================
-
     static async processDailyBilling() {
         try {
             console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━')
             console.log('⏰ Starting daily maintenance...')
             console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
 
-            // STEP 1: Process billing (FAST - runs in database)
+            // This database function uses FOR UPDATE SKIP LOCKED
+            // so multiple processes won't bill the same link twice
             console.log('💰 Processing billing...')
             const billingStart = Date.now()
             
@@ -1149,21 +934,21 @@ class LinkService {
             console.log(`   • Deactivated: ${result.deactivated} links`)
             console.log(`   • Collected: ${result.total_collected} tums`)
 
-            // STEP 2: Send deactivation notifications (async, don't block)
+            // Send notifications asynchronously (don't block)
             if (result.deactivated > 0) {
                 console.log('\n📤 Sending deactivation notifications...')
                 this.sendDeactivationNotifications(result.deactivated_links)
                     .catch(err => console.error('Notification error:', err.message))
             }
 
-            // STEP 3: Send 6-hour expiration warnings
+            // Send warnings
             console.log('\n⚠️ Checking for expiration warnings...')
             const warningStart = Date.now()
             const warningResult = await this.notifyExpiringLinks()
             const warningTime = ((Date.now() - warningStart) / 1000).toFixed(2)
             console.log(`✅ Warnings sent in ${warningTime}s: ${warningResult.notified} notifications`)
 
-            // STEP 4: Delete inactive links (24+ hours old)
+            // Cleanup
             console.log('\n🗑️ Cleaning up inactive links...')
             const cleanupStart = Date.now()
             const cleanupResult = await this.deleteInactiveLinks()
@@ -1183,7 +968,6 @@ class LinkService {
     // ===================================================================
     // SEND DEACTIVATION NOTIFICATIONS - Runs async, doesn't block billing
     // ===================================================================
-
     static async sendDeactivationNotifications(deactivatedLinksJson) {
         try {
             if (!deactivatedLinksJson || deactivatedLinksJson.length === 0) return
@@ -1244,7 +1028,6 @@ class LinkService {
     // ===================================================================
     // NOTIFY EXPIRING LINKS - Optimized with database function
     // ===================================================================
-
     static async notifyExpiringLinks() {
         try {
             // Get expiring links from database function
@@ -1329,7 +1112,6 @@ class LinkService {
     // ===================================================================
     // DELETE INACTIVE LINKS - Optimized with database function
     // ===================================================================
-
     static async deleteInactiveLinks() {
         try {
             // Get links ready for deletion
