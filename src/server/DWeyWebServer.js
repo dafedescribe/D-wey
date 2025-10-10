@@ -144,7 +144,7 @@ class DWeyWebServer {
         })
 
         // Catch-all route for undefined paths
-        this.app.get('*', (req, res) => {
+        this.app.use((req, res) => {
             res.status(404).json({ error: 'Route not found' })
         })
     }
